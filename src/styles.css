@@ -9,7 +9,20 @@ body,
 }
 
 body {
-  background: #f8f9fa;
+  background:
+    radial-gradient(circle at top, rgba(224, 240, 255, 0.52), transparent 34%),
+    linear-gradient(180deg, #f5f7fb 0%, #eef3f9 100%);
+  color: #0f172a;
+  font-family:
+    "SF Pro Display",
+    "SF Pro Text",
+    "PingFang SC",
+    "Hiragino Sans GB",
+    "Microsoft YaHei",
+    "Noto Sans SC",
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
 button,
@@ -17,4 +30,8 @@ input,
 select,
 textarea {
   font: inherit;
+}
+
+::selection {
+  background: rgba(96, 165, 250, 0.22);
 }

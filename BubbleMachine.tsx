@@ -121,6 +121,7 @@ type ArtboardSettings = {
   width: number;
   height: number;
   clipContent: boolean;
+  backgroundColor: string;
 };
 
 type ActivePointState = {
@@ -185,18 +186,18 @@ type SidebarProps = {
   applyShapeStyleToArtboard: (style: ShapeStyle, options?: { silent?: boolean }) => void;
   setActiveColor: React.Dispatch<React.SetStateAction<string>>;
   commitElements: (next: ElementItem[], options?: { saveHistory?: boolean }) => void;
-  addElement: (pathData: string, name?: string, options?: { alignAmplitudeToArtboard?: boolean }) => void;
+  addElement: (pathData: string, name?: string, options?: { alignAmplitudeToArtboard?: boolean; preserveImportedShape?: boolean }) => void;
   sectionOpen: Record<SectionKey, boolean>;
   toggleSection: (key: SectionKey) => void;
   collapsedSidebar: boolean;
   setCollapsedSidebar: React.Dispatch<React.SetStateAction<boolean>>;
+  fillCanvas: () => void;
+  fileInputRef: React.RefObject<HTMLInputElement | null>;
+  handleFileUpload: (e: React.ChangeEvent<HTMLInputElement>) => void;
 };
 
 type ToolbarProps = {
   historyIndex: number;
-  fillCanvas: () => void;
-  fileInputRef: React.RefObject<HTMLInputElement | null>;
-  handleFileUpload: (e: React.ChangeEvent<HTMLInputElement>) => void;
   isBrushMode: boolean;
   setIsBrushMode: React.Dispatch<React.SetStateAction<boolean>>;
   isEditMode: boolean;
@@ -288,12 +289,10 @@ const PRESET_DATA: PresetItem[] = [
 ];
 
 const INITIAL_COLORS = [
-  { name: '亮橙', value: '#ff4d00' },
-  { name: '荧光红', value: '#ff1744' },
-  { name: '电光蓝', value: '#00e5ff' },
-  { name: '如意金', value: '#ffc107' },
-  { name: '翡翠绿', value: '#00c853' },
-  { name: '魅惑紫', value: '#aa00ff' },
+  { name: '暖白', value: '#fffdf6' },
+  { name: '正红', value: '#ed0000' },
+  { name: '亮青', value: '#00d5ff' },
+  { name: '亮黄', value: '#ffe52e' },
 ];
 
 const DEFAULT_GLOW_SETTINGS: GlowSettings = {
@@ -326,9 +325,10 @@ const DEFAULT_LIQUID_SETTINGS: LiquidSettings = {
 };
 
 const DEFAULT_ARTBOARD_SETTINGS: ArtboardSettings = {
-  width: 1200,
-  height: 900,
+  width: 794,
+  height: 1123,
   clipContent: true,
+  backgroundColor: '#ffffff',
 };
 
 const MOTION_MODE_CONFIG: Record<MotionMode, { label: string; hint: string }> = {
@@ -376,6 +376,25 @@ const cloneSegments = (segments: Segment[]) => segments.map((segment) => ({ ...s
 const parsedPathCache = new Map<string, Segment[]>();
 const morphedPathCache = new Map<string, string>();
 
+const syncOutgoingHandles = (segments: Segment[]) => {
+  for (let index = 0; index < segments.length; index += 1) {
+    const seg = segments[index];
+    if (seg.type === 'C') {
+      delete seg.outX;
+      delete seg.outY;
+    }
+  }
+  for (let index = 0; index < segments.length - 1; index += 1) {
+    const seg = segments[index];
+    const next = segments[index + 1];
+    if (seg.type === 'C' && next.type === 'C') {
+      seg.outX = next.x1;
+      seg.outY = next.y1;
+    }
+  }
+  return segments;
+};
+
 const escapeXml = (value: string) => value
   .replace(/&/g, '&amp;')
   .replace(/</g, '&lt;')
@@ -405,6 +424,40 @@ const rgbToHex = ({ r, g, b }: { r: number; g: number; b: number }) => {
   const toHex = (channel: number) => Math.max(0, Math.min(255, Math.round(channel))).toString(16).padStart(2, '0');
   return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
 };
+
+const rgbToCmyk = ({ r, g, b }: { r: number; g: number; b: number }) => {
+  const red = r / 255;
+  const green = g / 255;
+  const blue = b / 255;
+  const key = 1 - Math.max(red, green, blue);
+
+  if (key >= 0.9999) {
+    return { c: 0, m: 0, y: 0, k: 100 };
+  }
+
+  return {
+    c: Math.round(((1 - red - key) / (1 - key)) * 100),
+    m: Math.round(((1 - green - key) / (1 - key)) * 100),
+    y: Math.round(((1 - blue - key) / (1 - key)) * 100),
+    k: Math.round(key * 100),
+  };
+};
+
+const cmykToRgb = ({ c, m, y, k }: { c: number; m: number; y: number; k: number }) => {
+  const cyan = Math.max(0, Math.min(100, c)) / 100;
+  const magenta = Math.max(0, Math.min(100, m)) / 100;
+  const yellow = Math.max(0, Math.min(100, y)) / 100;
+  const key = Math.max(0, Math.min(100, k)) / 100;
+
+  return {
+    r: 255 * (1 - cyan) * (1 - key),
+    g: 255 * (1 - magenta) * (1 - key),
+    b: 255 * (1 - yellow) * (1 - key),
+  };
+};
+
+const hexToCmyk = (value: string) => rgbToCmyk(hexToRgb(value));
+const cmykToHex = ({ c, m, y, k }: { c: number; m: number; y: number; k: number }) => rgbToHex(cmykToRgb({ c, m, y, k }));
 
 const mixHex = (source: string, target: string, amount: number) => {
   const clampedAmount = clamp01(amount);
@@ -604,15 +657,7 @@ const parsePathToSegments = (d: string): Segment[] => {
     }
   }
 
-  for (let index = 0; index < segments.length - 1; index += 1) {
-    const seg = segments[index];
-    const next = segments[index + 1];
-    if (seg.type === 'C' && next.type === 'C') {
-      seg.outX = next.x1;
-      seg.outY = next.y1;
-    }
-  }
-
+  syncOutgoingHandles(segments);
   parsedPathCache.set(normalizedPath, cloneSegments(segments));
   return segments;
 };
@@ -1004,6 +1049,33 @@ const reducePointsToTarget = (points: Point[], targetCount: number) => {
   return result;
 };
 
+const reducePointsToTargetPreservingIndices = (points: Point[], targetCount: number, preserveIndexes: number[]) => {
+  if (points.length <= targetCount) return points.slice();
+
+  const required = Array.from(new Set([
+    0,
+    points.length - 1,
+    ...preserveIndexes.filter((index) => index > 0 && index < points.length - 1),
+  ])).sort((a, b) => a - b);
+
+  if (required.length >= targetCount) {
+    return required.slice(0, targetCount).map((index) => points[index]);
+  }
+
+  const resultIndexes = new Set<number>(required);
+  const remaining = targetCount - resultIndexes.size;
+
+  for (let i = 0; i < remaining; i += 1) {
+    const sampleIndex = Math.round(((i + 1) / (remaining + 1)) * (points.length - 1));
+    resultIndexes.add(sampleIndex);
+  }
+
+  return Array.from(resultIndexes)
+    .sort((a, b) => a - b)
+    .slice(0, targetCount)
+    .map((index) => points[index]);
+};
+
 const chaikinSmoothClosed = (points: Point[], iterations: number) => {
   let current = points.slice();
   for (let iteration = 0; iteration < iterations; iteration += 1) {
@@ -1029,14 +1101,14 @@ const chaikinSmoothClosed = (points: Point[], iterations: number) => {
 const simplifyBrushPoints = (points: Point[], referenceSize: number) => {
   if (points.length <= 6) return points.slice();
 
-  const baseTolerance = Math.max(4, Math.min(16, referenceSize * 0.03));
-  const targetCount = Math.max(6, Math.min(10, Math.round(referenceSize / 140) + 5));
+  const baseTolerance = Math.max(2.5, Math.min(10, referenceSize * 0.018));
+  const targetCount = Math.max(8, Math.min(14, Math.round(referenceSize / 110) + 6));
   let tolerance = baseTolerance;
   let simplified = simplifyPolyline(points, tolerance);
   let guard = 0;
 
   while (simplified.length > targetCount && guard < 8) {
-    tolerance *= 1.35;
+    tolerance *= 1.2;
     simplified = simplifyPolyline(points, tolerance);
     guard += 1;
   }
@@ -1049,7 +1121,7 @@ const simplifyBrushPoints = (points: Point[], referenceSize: number) => {
 };
 
 const getBrushAnchorTarget = (referenceSize: number) => (
-  Math.max(6, Math.min(10, Math.round(referenceSize / 140) + 5))
+  Math.max(8, Math.min(14, Math.round(referenceSize / 110) + 6))
 );
 
 const getBrushAngularity = (points: Point[]) => {
@@ -1080,6 +1152,44 @@ const getBrushAngularity = (points: Point[]) => {
 
   if (sampleCount === 0) return 0;
   return totalCornerness / sampleCount * 0.65 + maxCornerness * 0.35;
+};
+
+const getBrushCornerIndexes = (points: Point[]) => {
+  if (points.length < 5) return [] as number[];
+
+  const corners: number[] = [];
+  for (let i = 0; i < points.length; i += 1) {
+    const prev = points[(i - 1 + points.length) % points.length];
+    const current = points[i];
+    const next = points[(i + 1) % points.length];
+    const v1x = current.x - prev.x;
+    const v1y = current.y - prev.y;
+    const v2x = next.x - current.x;
+    const v2y = next.y - current.y;
+    const len1 = Math.hypot(v1x, v1y);
+    const len2 = Math.hypot(v2x, v2y);
+    if (len1 < 0.001 || len2 < 0.001) continue;
+
+    const dot = (v1x * v2x + v1y * v2y) / (len1 * len2);
+    const cornerness = 1 - Math.max(-1, Math.min(1, dot));
+    if (cornerness > 0.22) corners.push(i);
+  }
+
+  return corners;
+};
+
+const MM_PER_PIXEL = 0.2645833333;
+const PIXELS_PER_MM = 1 / MM_PER_PIXEL;
+
+const pixelsToMillimeters = (pixels: number) => pixels * MM_PER_PIXEL;
+const pixelsToCentimeters = (pixels: number) => pixelsToMillimeters(pixels) / 10;
+const millimetersToPixels = (millimeters: number) => millimeters * PIXELS_PER_MM;
+const centimetersToPixels = (centimeters: number) => millimetersToPixels(centimeters * 10);
+
+const getMetricSizeLabel = (pixels: number) => {
+  const mm = pixelsToMillimeters(pixels);
+  const cm = pixelsToCentimeters(pixels);
+  return `${mm.toFixed(1)}mm · ${cm.toFixed(2)}cm`;
 };
 
 const stabilizeBrushLiquidProfile = (profile: LiquidProfile): LiquidProfile => ({
@@ -1163,21 +1273,7 @@ const morphPathByStyle = (path: string, style: ShapeStyle, seedOffset = 0, inten
     }
   });
 
-  for (let i = 0; i < segments.length; i += 1) {
-    const seg = segments[i];
-    if (seg.type === 'C') {
-      delete seg.outX;
-      delete seg.outY;
-    }
-  }
-  for (let i = 0; i < segments.length - 1; i += 1) {
-    const seg = segments[i];
-    const next = segments[i + 1];
-    if (seg.type === 'C' && next.type === 'C') {
-      seg.outX = next.x1;
-      seg.outY = next.y1;
-    }
-  }
+  syncOutgoingHandles(segments);
 
   const morphedPath = segmentsToPath(segments);
   morphedPathCache.set(cacheKey, morphedPath);
@@ -1224,7 +1320,7 @@ const Section = memo(function Section({
       <button onClick={onToggle} className="w-full flex items-center justify-between gap-2 text-slate-500 hover:text-slate-900 transition-colors">
         <div className="flex items-center gap-2">
           <Icon className="w-4 h-4" />
-          <h3 className="text-[10px] font-black uppercase tracking-widest">{title}</h3>
+          <h3 className="text-[11px] font-semibold tracking-[0.08em] text-slate-500">{title}</h3>
         </div>
         <ChevronRight className={`w-4 h-4 transition-transform ${open ? 'rotate-90' : ''}`} />
       </button>
@@ -1233,7 +1329,115 @@ const Section = memo(function Section({
   );
 });
 
+const BubbleMark = memo(function BubbleMark({ className = 'w-11 h-11' }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 64 64" className={className} fill="none" aria-hidden="true">
+      <defs>
+        <linearGradient id="bubble-mark-fill" x1="14" y1="10" x2="52" y2="56" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stopColor="#dff5ff" />
+          <stop offset="0.5" stopColor="#90d8ff" />
+          <stop offset="1" stopColor="#4db4ff" />
+        </linearGradient>
+      </defs>
+      <path d="M24 14C15.16 14 8 21.16 8 30s7.16 16 16 16c4.33 0 8.27-1.72 11.16-4.52a5.2 5.2 0 0 1 1.77-1.13c6.41-2.08 11.07-8.1 11.07-15.22C48 18.97 42.63 14 36 14c-3.12 0-6.02 1.1-8.3 2.96A14.8 14.8 0 0 0 24 14Z" fill="url(#bubble-mark-fill)" />
+      <path d="M24 14C15.16 14 8 21.16 8 30s7.16 16 16 16c4.33 0 8.27-1.72 11.16-4.52a5.2 5.2 0 0 1 1.77-1.13c6.41-2.08 11.07-8.1 11.07-15.22C48 18.97 42.63 14 36 14c-3.12 0-6.02 1.1-8.3 2.96A14.8 14.8 0 0 0 24 14Z" stroke="#0f172a" strokeOpacity="0.08" />
+      <circle cx="22" cy="24" r="4.5" fill="#ffffff" fillOpacity="0.58" />
+      <circle cx="40.5" cy="18.5" r="2.5" fill="#ffffff" fillOpacity="0.5" />
+    </svg>
+  );
+});
+
 const Sidebar = memo(function Sidebar({
+  activeColor,
+  selectedIds,
+  elements,
+  rerandomizeLiquidProfiles,
+  fitViewToArtboard,
+  shapeStyleIntensity,
+  addElement,
+  sectionOpen,
+  toggleSection,
+  collapsedSidebar,
+  setCollapsedSidebar,
+  fillCanvas,
+  fileInputRef,
+  handleFileUpload,
+}: SidebarProps) {
+  const presetPreviewPaths = useMemo(() => (
+    PRESET_DATA.reduce<Record<string, string>>((acc, shape) => {
+      acc[shape.name] = morphPathByStyle(shape.path, 'smooth', shape.name.length * 97, shapeStyleIntensity * 0.5);
+      return acc;
+    }, {})
+  ), [shapeStyleIntensity]);
+
+  return (
+    <aside className={`${collapsedSidebar ? 'w-[84px]' : 'w-[320px]'} h-full bg-white/88 backdrop-blur-2xl border border-white/70 rounded-[30px] z-30 flex flex-col shadow-[0_24px_80px_rgba(15,23,42,0.10)] overflow-y-auto transition-all duration-200`}>
+      <div className={`p-5 border-b border-slate-100/80 flex items-center ${collapsedSidebar ? 'justify-center' : 'gap-4'}`}>
+        <div className="w-12 h-12 rounded-[20px] bg-[#eef7ff] border border-white shadow-[0_10px_24px_rgba(148,163,184,0.12)] flex items-center justify-center">
+          <BubbleMark className="w-10 h-10" />
+        </div>
+        {!collapsedSidebar && (
+          <>
+            <div className="flex-1 min-w-0">
+              <h1 className="text-[22px] font-semibold tracking-tight text-slate-950 leading-none mb-1">Bubble Studio</h1>
+              <span className="text-[11px] font-medium text-slate-400 tracking-wide">创建面板</span>
+            </div>
+            <button onClick={() => setCollapsedSidebar(true)} className="p-2 rounded-xl hover:bg-slate-100/80 text-slate-500"><PanelLeftClose className="w-4 h-4" /></button>
+          </>
+        )}
+        {collapsedSidebar && <button onClick={() => setCollapsedSidebar(false)} className="absolute top-5 left-[72px] p-2 rounded-xl bg-white border border-slate-200 shadow-sm text-slate-500"><PanelLeftOpen className="w-4 h-4" /></button>}
+      </div>
+
+      {collapsedSidebar ? (
+        <div className="p-3 flex flex-col items-center gap-3">
+          {[Wand2, FileCode, Sparkles, LayoutGrid].map((Icon, index) => (
+            <button key={index} onClick={() => setCollapsedSidebar(false)} className="w-11 h-11 rounded-2xl border border-slate-200 hover:bg-slate-100 text-slate-600 flex items-center justify-center">
+              <Icon className="w-4 h-4" />
+            </button>
+          ))}
+        </div>
+      ) : (
+        <div className="p-5 space-y-6 flex-1">
+          <div className="rounded-[26px] bg-[rgba(246,247,251,0.92)] border border-white/90 p-4 space-y-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.9),0_8px_24px_rgba(15,23,42,0.04)]">
+            <div>
+              <div className="text-[11px] font-semibold tracking-[0.12em] text-slate-400 mb-2">工作区</div>
+              <div className="text-sm text-slate-500 leading-6">
+                当前 <span className="font-semibold text-slate-900">{elements.length}</span> 个气泡
+                <br />
+                已选择 <span className="font-semibold text-slate-900">{selectedIds.length}</span> 个对象
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <button onClick={fillCanvas} className="px-3 py-3 rounded-2xl bg-slate-950 text-white text-[11px] font-semibold tracking-wide shadow-[0_12px_30px_rgba(15,23,42,0.16)]">一键填充</button>
+              <button onClick={fitViewToArtboard} className="px-3 py-3 rounded-2xl bg-white/92 text-slate-700 text-[11px] font-semibold tracking-wide border border-slate-200/90 shadow-[0_10px_24px_rgba(15,23,42,0.04)]">适配画板</button>
+              <button onClick={rerandomizeLiquidProfiles} className="px-3 py-3 rounded-2xl bg-white/92 text-slate-700 text-[11px] font-semibold tracking-wide border border-slate-200/90 shadow-[0_10px_24px_rgba(15,23,42,0.04)]">液体随机</button>
+              <button onClick={() => fileInputRef.current?.click()} className="px-3 py-3 rounded-2xl bg-white/92 text-slate-700 text-[11px] font-semibold tracking-wide border border-slate-200/90 shadow-[0_10px_24px_rgba(15,23,42,0.04)]">导入 SVG</button>
+            </div>
+            <input type="file" ref={fileInputRef} onChange={handleFileUpload} accept=".svg" className="hidden" />
+          </div>
+
+          <Section title="预设素材" icon={LayoutGrid} open={sectionOpen.library} onToggle={() => toggleSection('library')}>
+            <div className="grid grid-cols-1 gap-2 pb-6">
+              {PRESET_DATA.map((shape) => (
+                <button key={shape.name} onClick={() => addElement(shape.path, shape.name)} className="group flex items-center justify-between p-3 rounded-2xl hover:bg-slate-950 hover:text-white transition-all border border-slate-100/90 bg-white/92 shadow-[0_10px_24px_rgba(15,23,42,0.05)]">
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-2xl bg-slate-50/90 flex items-center justify-center">
+                      <svg viewBox="-50 -50 100 100" className="w-5 h-5"><path d={presetPreviewPaths[shape.name] || shape.path} fill={activeColor} stroke="none" /></svg>
+                    </div>
+                    <span className="text-sm font-medium tracking-tight">{shape.name}</span>
+                  </div>
+                  <ChevronRight className="w-4 h-4 opacity-0 group-hover:opacity-40 transition-opacity" />
+                </button>
+              ))}
+            </div>
+          </Section>
+        </div>
+      )}
+    </aside>
+  );
+});
+
+const InspectorPanel = memo(function InspectorPanel({
   activeColor,
   palette,
   selectedIds,
@@ -1247,7 +1451,6 @@ const Sidebar = memo(function Sidebar({
   setGlowSettings,
   liquidSettings,
   setLiquidSettings,
-  rerandomizeLiquidProfiles,
   artboard,
   setArtboard,
   fitViewToArtboard,
@@ -1257,363 +1460,526 @@ const Sidebar = memo(function Sidebar({
   applyShapeStyleToArtboard,
   setActiveColor,
   commitElements,
-  addElement,
   sectionOpen,
   toggleSection,
-  collapsedSidebar,
-  setCollapsedSidebar,
 }: SidebarProps) {
-  const presetPreviewPaths = useMemo(() => (
-    PRESET_DATA.reduce<Record<string, string>>((acc, shape) => {
-      acc[shape.name] = morphPathByStyle(shape.path, shapeStyle, shape.name.length * 97, shapeStyleIntensity);
-      return acc;
-    }, {})
-  ), [shapeStyle, shapeStyleIntensity]);
+  const activeCmyk = useMemo(() => hexToCmyk(activeColor), [activeColor]);
+  const activeRgb = useMemo(() => hexToRgb(activeColor), [activeColor]);
+  const artboardRgb = useMemo(() => hexToRgb(artboard.backgroundColor), [artboard.backgroundColor]);
+  const artboardCmyk = useMemo(() => hexToCmyk(artboard.backgroundColor), [artboard.backgroundColor]);
+  const [colorInputMode, setColorInputMode] = useState<'rgb' | 'hex' | 'cmyk'>('hex');
+  const [artboardColorInputMode, setArtboardColorInputMode] = useState<'rgb' | 'hex' | 'cmyk'>('hex');
+  const [hexDraft, setHexDraft] = useState(activeColor.toUpperCase());
+  const [artboardHexDraft, setArtboardHexDraft] = useState(artboard.backgroundColor.toUpperCase());
+
+  useEffect(() => {
+    setHexDraft(activeColor.toUpperCase());
+  }, [activeColor]);
+
+  useEffect(() => {
+    setArtboardHexDraft(artboard.backgroundColor.toUpperCase());
+  }, [artboard.backgroundColor]);
+
+  const applyColor = useCallback((color: string) => {
+    setActiveColor(color);
+    if (selectedIds.length > 0) {
+      const next = elements.map((el) => selectedIdSet.has(el.id) ? { ...el, color } : el);
+      commitElements(next);
+    }
+  }, [commitElements, elements, selectedIdSet, selectedIds.length, setActiveColor]);
+
+  const updateRgbChannel = useCallback((channel: 'r' | 'g' | 'b', rawValue: string) => {
+    const nextValue = Math.max(0, Math.min(255, parseInt(rawValue || '0', 10) || 0));
+    const nextColor = rgbToHex({ ...activeRgb, [channel]: nextValue });
+    applyColor(nextColor);
+  }, [activeRgb, applyColor]);
+
+  const updateCmykChannel = useCallback((channel: 'c' | 'm' | 'y' | 'k', rawValue: string) => {
+    const nextValue = Math.max(0, Math.min(100, parseInt(rawValue || '0', 10) || 0));
+    const nextColor = cmykToHex({ ...activeCmyk, [channel]: nextValue });
+    applyColor(nextColor);
+  }, [activeCmyk, applyColor]);
+
+  const commitHexDraft = useCallback(() => {
+    const normalized = normalizeHex(hexDraft.trim());
+    setHexDraft(normalized.toUpperCase());
+    applyColor(normalized);
+  }, [applyColor, hexDraft]);
+
+  const applyArtboardColor = useCallback((color: string) => {
+    setArtboard((prev) => ({ ...prev, backgroundColor: color }));
+  }, [setArtboard]);
+
+  const updateArtboardRgbChannel = useCallback((channel: 'r' | 'g' | 'b', rawValue: string) => {
+    const nextValue = Math.max(0, Math.min(255, parseInt(rawValue || '0', 10) || 0));
+    applyArtboardColor(rgbToHex({ ...artboardRgb, [channel]: nextValue }));
+  }, [applyArtboardColor, artboardRgb]);
+
+  const updateArtboardCmykChannel = useCallback((channel: 'c' | 'm' | 'y' | 'k', rawValue: string) => {
+    const nextValue = Math.max(0, Math.min(100, parseInt(rawValue || '0', 10) || 0));
+    applyArtboardColor(cmykToHex({ ...artboardCmyk, [channel]: nextValue }));
+  }, [applyArtboardColor, artboardCmyk]);
+
+  const commitArtboardHexDraft = useCallback(() => {
+    const normalized = normalizeHex(artboardHexDraft.trim());
+    setArtboardHexDraft(normalized.toUpperCase());
+    applyArtboardColor(normalized);
+  }, [applyArtboardColor, artboardHexDraft]);
 
   return (
-    <aside className={`${collapsedSidebar ? 'w-[72px]' : 'w-80'} h-full bg-white border-r border-slate-200 z-30 flex flex-col shadow-sm overflow-y-auto transition-all duration-200`}>
-      <div className={`p-4 border-b border-slate-100 flex items-center ${collapsedSidebar ? 'justify-center' : 'gap-4'}`}>
-        <div className="w-11 h-11 rounded-2xl flex items-center justify-center shadow-lg" style={{ backgroundColor: activeColor }}>
-          <Sparkles className="text-white w-6 h-6" />
-        </div>
-        {!collapsedSidebar && (
-          <>
-            <div className="flex-1 min-w-0">
-              <h1 className="text-lg font-black tracking-tight text-slate-900 leading-none mb-1">融合工坊</h1>
-              <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest bg-slate-100 px-2 py-0.5 rounded-full">Studio v2.1</span>
-            </div>
-            <button onClick={() => setCollapsedSidebar(true)} className="p-2 rounded-xl hover:bg-slate-100 text-slate-500"><PanelLeftClose className="w-4 h-4" /></button>
-          </>
-        )}
-        {collapsedSidebar && <button onClick={() => setCollapsedSidebar(false)} className="absolute top-4 left-16 p-2 rounded-xl bg-white border border-slate-200 shadow-sm text-slate-500"><PanelLeftOpen className="w-4 h-4" /></button>}
+    <aside className="w-[356px] h-full bg-white/88 backdrop-blur-2xl border border-white/70 rounded-[30px] z-30 flex flex-col shadow-[0_24px_80px_rgba(15,23,42,0.10)] overflow-y-auto">
+      <div className="p-5 border-b border-slate-100/80">
+        <div className="text-[11px] font-semibold tracking-[0.12em] text-slate-400 mb-1">检视面板</div>
+        <div className="text-[24px] font-semibold tracking-tight text-slate-950">外观与动态</div>
+        <div className="text-sm text-slate-500 mt-2">当前选择 {selectedIds.length} 个对象，参数会按创建、接触、动态的顺序组织。</div>
       </div>
 
-      {collapsedSidebar ? (
-        <div className="p-3 flex flex-col items-center gap-2">
-          {QUICK_SECTIONS.map((key) => {
-            const Icon = SECTION_ICONS[key];
-            return (
-              <button key={key} onClick={() => { setCollapsedSidebar(false); toggleSection(key); }} className="w-11 h-11 rounded-2xl border border-slate-200 hover:bg-slate-100 text-slate-600 flex items-center justify-center">
-                <Icon className="w-4 h-4" />
-              </button>
-            );
-          })}
-        </div>
-      ) : (
-        <div className="p-5 space-y-6 flex-1">
-          <Section title="快捷操作" icon={Wand2} open={sectionOpen.quick} onToggle={() => toggleSection('quick')}>
-            <div className="grid grid-cols-2 gap-2">
-              <button onClick={fitViewToArtboard} className="flex items-center justify-center gap-2 px-3 py-2.5 rounded-xl bg-slate-900 text-white shadow-sm hover:bg-slate-800">
-                <Target className="w-4 h-4" />
-                <span className="text-[10px] font-black uppercase tracking-widest">适配画板</span>
-              </button>
-              <button onClick={rerandomizeLiquidProfiles} className="flex items-center justify-center gap-2 px-3 py-2.5 rounded-xl bg-white text-slate-700 border border-slate-200 shadow-sm hover:bg-slate-50">
-                <Zap className="w-4 h-4" />
-                <span className="text-[10px] font-black uppercase tracking-widest">液体随机</span>
-              </button>
+      <div className="p-5 space-y-6 flex-1">
+        <Section title="外观" icon={Palette} open={sectionOpen.color} onToggle={() => toggleSection('color')}>
+          <div className="bg-[rgba(246,247,251,0.92)] rounded-[26px] p-4 border border-white/90 space-y-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.88),0_8px_24px_rgba(15,23,42,0.04)]">
+            <div className="flex items-center justify-between">
+              <div className="space-y-1">
+                <div className="text-[10px] font-semibold text-slate-500 tracking-[0.12em]">当前活动色</div>
+                <div className="text-[11px] text-slate-400">更换后会同步到新建气泡和当前选中对象</div>
+              </div>
+              <div className="relative group">
+                <input
+                  type="color"
+                  value={activeColor}
+                  onChange={(e) => applyColor(e.target.value)}
+                  className="w-10 h-10 rounded-xl opacity-0 absolute inset-0 cursor-pointer z-10"
+                />
+                <div className="w-10 h-10 rounded-[16px] border-2 border-white shadow-sm" style={{ backgroundColor: activeColor }} />
+              </div>
             </div>
-            <div className="text-[10px] leading-relaxed font-bold text-slate-500 bg-slate-50 border border-slate-100 rounded-2xl p-3">
-              当前共有 <span className="text-slate-900">{elements.length}</span> 个元素，已选择 <span className="text-slate-900">{selectedIds.length}</span> 个。
+            <div className="grid grid-cols-4 gap-2">
+              {palette.map((color) => (
+                <button
+                  key={color.value}
+                  onClick={() => applyColor(color.value)}
+                  className={`h-10 rounded-2xl border transition-all ${activeColor === color.value ? 'ring-2 ring-slate-900 ring-offset-2 border-slate-900/10 shadow-[0_10px_24px_rgba(15,23,42,0.08)]' : 'border-white/90 shadow-[0_8px_18px_rgba(15,23,42,0.05)]'}`}
+                  style={{ backgroundColor: color.value }}
+                  title={color.name}
+                />
+              ))}
             </div>
-          </Section>
-
-          <Section title="物理特性调节" icon={Settings2} open={sectionOpen.physics} onToggle={() => toggleSection('physics')}>
-            <div className="bg-slate-50 rounded-2xl p-4 border border-slate-100 space-y-5">
-              <div className="space-y-2">
-                <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-widest text-slate-500">
-                  <Link2 className="w-3.5 h-3.5 opacity-70" />
-                  <span>接触模式</span>
-                </div>
-                <div className="grid grid-cols-3 gap-2">
-                  {(Object.keys(CONTACT_MODE_CONFIG) as ContactMode[]).map((modeKey) => (
+            <div className="rounded-[22px] bg-white/75 border border-white/90 p-3 shadow-[0_8px_18px_rgba(15,23,42,0.04)] space-y-3">
+              <div className="flex items-center justify-between gap-3">
+                <div className="text-[10px] font-semibold text-slate-500 tracking-[0.12em]">颜色输入</div>
+                <div className="rounded-[18px] bg-slate-100/90 p-1 flex items-center gap-1">
+                  {([
+                    ['rgb', 'RGB'],
+                    ['hex', 'HEX'],
+                    ['cmyk', 'CMYK'],
+                  ] as const).map(([mode, label]) => (
                     <button
-                      key={modeKey}
-                      onClick={() => setContactMode(modeKey)}
-                      className={`px-3 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest border transition-all ${contactMode === modeKey ? 'bg-slate-900 text-white border-slate-900' : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-100'}`}
+                      key={mode}
+                      onClick={() => setColorInputMode(mode)}
+                      className={`px-3 py-1.5 rounded-[14px] text-[10px] font-semibold transition-all ${colorInputMode === mode ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
                     >
-                      {CONTACT_MODE_CONFIG[modeKey].label}
+                      {label}
                     </button>
                   ))}
                 </div>
-                <div className="text-[10px] font-bold text-slate-500 leading-relaxed">{CONTACT_MODE_CONFIG[contactMode].hint}</div>
               </div>
-              {contactMode === 'negative' && (
+              {colorInputMode === 'rgb' && (
                 <>
-                  {[
-                    { label: '轮廓圆润', icon: Waves, key: 'negativeRoundness', min: 0, max: 1, step: 0.01 },
-                    { label: '块面颗粒', icon: Sparkles, key: 'negativeGrain', min: 0, max: 1, step: 0.01 },
-                  ].map((item) => (
-                    <div key={item.key} className="space-y-2">
-                      <div className="flex justify-between items-center text-[10px] font-bold text-slate-500 uppercase">
-                        <span className="flex items-center gap-2"><item.icon className="w-3 h-3 opacity-60" /> {item.label}</span>
-                        <span className="bg-white px-1.5 py-0.5 rounded border border-slate-200">
-                          {Math.round((contactSettings[item.key as keyof ContactSettings] as number) * 100)}%
-                        </span>
-                      </div>
-                      <input
-                        type="range"
-                        min={item.min}
-                        max={item.max}
-                        step={item.step}
-                        value={contactSettings[item.key as keyof ContactSettings] as number}
-                        onChange={(e) => setContactSettings((prev) => ({ ...prev, [item.key]: parseFloat(e.target.value) }))}
-                        className="w-full h-1.5 rounded-full bg-slate-200 appearance-none cursor-pointer"
-                      />
-                    </div>
-                  ))}
+                  <div className="text-[11px] text-slate-400">RGB 使用屏幕显示色值，范围 0 - 255</div>
+                  <div className="grid grid-cols-3 gap-2">
+                    {([
+                      ['r', 'R'],
+                      ['g', 'G'],
+                      ['b', 'B'],
+                    ] as const).map(([key, label]) => (
+                      <label key={key} className="space-y-1.5">
+                        <span className="block text-[10px] font-semibold text-slate-400 tracking-[0.12em]">{label}</span>
+                        <input
+                          type="number"
+                          min={0}
+                          max={255}
+                          value={activeRgb[key]}
+                          onChange={(e) => updateRgbChannel(key, e.target.value)}
+                          className="w-full px-2 py-2 rounded-[16px] border border-slate-200 bg-white text-[12px] font-semibold text-slate-700 outline-none focus:border-slate-400"
+                        />
+                      </label>
+                    ))}
+                  </div>
                 </>
               )}
-              {contactMode === 'overlay' && (
+              {colorInputMode === 'hex' && (
                 <>
-                  {[
-                    { label: '叠压模糊', icon: Waves, key: 'overlayBlur', min: 0, max: 24, step: 0.5, format: (value: number) => value.toFixed(1).replace(/\.0$/, '') },
-                    { label: '模糊强度', icon: Sun, key: 'overlayBlurOpacity', min: 0, max: 1, step: 0.01, format: (value: number) => `${Math.round(value * 100)}%` },
-                  ].map((item) => (
-                    <div key={item.key} className="space-y-2">
-                      <div className="flex justify-between items-center text-[10px] font-bold text-slate-500 uppercase">
-                        <span className="flex items-center gap-2"><item.icon className="w-3 h-3 opacity-60" /> {item.label}</span>
-                        <span className="bg-white px-1.5 py-0.5 rounded border border-slate-200">
-                          {item.format(contactSettings[item.key as keyof ContactSettings] as number)}
-                        </span>
-                      </div>
-                      <input
-                        type="range"
-                        min={item.min}
-                        max={item.max}
-                        step={item.step}
-                        value={contactSettings[item.key as keyof ContactSettings] as number}
-                        onChange={(e) => setContactSettings((prev) => ({ ...prev, [item.key]: parseFloat(e.target.value) }))}
-                        className="w-full h-1.5 rounded-full bg-slate-200 appearance-none cursor-pointer"
-                      />
-                    </div>
-                  ))}
+                  <div className="text-[11px] text-slate-400">HEX 是网页显示使用的实际颜色值</div>
+                  <input
+                    type="text"
+                    value={hexDraft}
+                    onChange={(e) => setHexDraft(e.target.value.toUpperCase())}
+                    onBlur={commitHexDraft}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        commitHexDraft();
+                      }
+                    }}
+                    className="w-full px-3 py-2.5 rounded-[16px] border border-slate-200 bg-white text-[13px] font-semibold tracking-[0.08em] text-slate-700 outline-none focus:border-slate-400"
+                  />
                 </>
               )}
-              {[
-                { label: '接触吸附', icon: Link2, key: 'contactSuction', min: 1, max: 45, step: 1 },
-                { label: '单体吸附', icon: User, key: 'individualSuction', min: 0, max: 25, step: 1 },
-                { label: '渐变深度', icon: Sliders, key: 'glowDepth', min: 1, max: 100, step: 1 },
-                { label: '渐变强度', icon: Sun, key: 'gradientShade', min: 0, max: 100, step: 1 },
-                { label: '边沿厚度', icon: Sliders, key: 'edgeThickness', min: 0.5, max: 15, step: 0.5 },
-                { label: '内部柔化', icon: Waves, key: 'innerSoftness', min: 0, max: 30, step: 0.5 },
-                { label: '线条抖动', icon: Waves, key: 'lineJitter', min: 0, max: 8, step: 0.1 },
-                { label: '整体强度', icon: Sparkles, key: 'intensity', min: 0.5, max: 3, step: 0.05 },
-                { label: '质感颗粒', icon: Waves, key: 'grain', min: 0, max: 1, step: 0.01 },
-              ].map((item) => (
-                <div key={item.key} className="space-y-2">
-                  <div className="flex justify-between items-center text-[10px] font-bold text-slate-500 uppercase">
-                    <span className="flex items-center gap-2"><item.icon className="w-3 h-3 opacity-60" /> {item.label}</span>
-                    <span className="bg-white px-1.5 py-0.5 rounded border border-slate-200">{typeof glowSettings[item.key as keyof GlowSettings] === 'number' ? Number(glowSettings[item.key as keyof GlowSettings]).toFixed(item.key === 'grain' ? 2 : 1).replace(/\.0$/, '') : ''}</span>
+              {colorInputMode === 'cmyk' && (
+                <>
+                  <div className="text-[11px] leading-relaxed text-slate-400">CMYK 为网页近似预览，用于输入参考印刷数值，不等同 Illustrator 的色彩管理结果。</div>
+                  <div className="grid grid-cols-4 gap-2">
+                    {([
+                      ['c', 'C'],
+                      ['m', 'M'],
+                      ['y', 'Y'],
+                      ['k', 'K'],
+                    ] as const).map(([key, label]) => (
+                      <label key={key} className="space-y-1.5">
+                        <span className="block text-[10px] font-semibold text-slate-400 tracking-[0.12em]">{label}</span>
+                        <input
+                          type="number"
+                          min={0}
+                          max={100}
+                          value={activeCmyk[key]}
+                          onChange={(e) => updateCmykChannel(key, e.target.value)}
+                          className="w-full px-2 py-2 rounded-[16px] border border-slate-200 bg-white text-[12px] font-semibold text-slate-700 outline-none focus:border-slate-400"
+                        />
+                      </label>
+                    ))}
                   </div>
-                  <input
-                    type="range"
-                    min={item.min}
-                    max={item.max}
-                    step={item.step}
-                    value={glowSettings[item.key as keyof GlowSettings] as number}
-                    onChange={(e) => setGlowSettings((prev) => ({ ...prev, [item.key]: parseFloat(e.target.value) }))}
-                    className="w-full h-1.5 rounded-full bg-slate-200 appearance-none cursor-pointer"
-                  />
-                </div>
-              ))}
-            </div>
-          </Section>
-
-          <Section title="灵感配色" icon={Palette} open={sectionOpen.color} onToggle={() => toggleSection('color')}>
-            <div className="space-y-4">
-              <div className="flex items-center justify-between">
-                <div className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">当前活动色</div>
-                <div className="relative group">
-                  <input
-                    type="color"
-                    value={activeColor}
-                    onChange={(e) => {
-                      const color = e.target.value;
-                      setActiveColor(color);
-                      if (selectedIds.length > 0) {
-                        const next = elements.map((el) => selectedIdSet.has(el.id) ? { ...el, color } : el);
-                        commitElements(next);
-                      }
-                    }}
-                    className="w-8 h-8 rounded-lg opacity-0 absolute inset-0 cursor-pointer z-10"
-                  />
-                  <div className="w-8 h-8 rounded-xl border-2 border-white shadow-sm flex items-center justify-center" style={{ backgroundColor: activeColor }}>
-                    <Plus className="w-3 h-3 text-white" />
-                  </div>
-                </div>
-              </div>
-              <div className="grid grid-cols-6 gap-2">
-                {palette.map((color) => (
-                  <button
-                    key={color.value}
-                    onClick={() => {
-                      setActiveColor(color.value);
-                      if (selectedIds.length > 0) {
-                        const next = elements.map((el) => selectedIdSet.has(el.id) ? { ...el, color: color.value } : el);
-                        commitElements(next);
-                      }
-                    }}
-                    className={`h-8 rounded-xl transition-all ${activeColor === color.value ? 'ring-2 ring-slate-900 ring-offset-2' : 'shadow-sm'}`}
-                    style={{ backgroundColor: color.value }}
-                    title={color.name}
-                  />
-                ))}
-              </div>
-            </div>
-          </Section>
-
-          <Section title="全局液体动态" icon={Droplets} open={sectionOpen.motion} onToggle={() => toggleSection('motion')}>
-            <div className="space-y-3">
-              <button onClick={() => setLiquidSettings((prev) => ({ ...prev, enabled: !prev.enabled }))} className={`w-full flex items-center justify-between px-4 py-3 rounded-2xl border transition-all ${liquidSettings.enabled ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-slate-700 border-slate-200'}`}>
-                <span className="text-[10px] font-black uppercase tracking-widest">液体动画</span>
-                <span className="text-[10px] font-black uppercase tracking-widest">{liquidSettings.enabled ? '开启' : '关闭'}</span>
-              </button>
-              {liquidSettings.enabled && (
-                <div className="bg-slate-50 rounded-2xl p-4 border border-slate-100 space-y-5">
-                  <div className="space-y-2">
-                    <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-widest text-slate-500">
-                      <Zap className="w-3.5 h-3.5 opacity-70" />
-                      <span>动态模式</span>
-                    </div>
-                    <div className="grid grid-cols-3 gap-2">
-                      {(Object.keys(MOTION_MODE_CONFIG) as MotionMode[]).map((modeKey) => (
-                        <button
-                          key={modeKey}
-                          onClick={() => setLiquidSettings((prev) => ({ ...prev, mode: modeKey }))}
-                          className={`px-3 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest border transition-all ${liquidSettings.mode === modeKey ? 'bg-slate-900 text-white border-slate-900' : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-100'}`}
-                        >
-                          {MOTION_MODE_CONFIG[modeKey].label}
-                        </button>
-                      ))}
-                    </div>
-                    <div className="text-[10px] font-bold text-slate-500 leading-relaxed">{MOTION_MODE_CONFIG[liquidSettings.mode].hint}</div>
-                  </div>
-                  <div className="space-y-2">
-                    <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-widest text-slate-500">
-                      <Layers3 className="w-3.5 h-3.5 opacity-70" />
-                      <span>导入幅度对齐</span>
-                    </div>
-                    <div className="grid grid-cols-3 gap-2">
-                      {(Object.keys(IMPORT_AMPLITUDE_MODE_CONFIG) as ImportAmplitudeMode[]).map((modeKey) => (
-                        <button
-                          key={modeKey}
-                          onClick={() => setLiquidSettings((prev) => ({ ...prev, importAmplitudeMode: modeKey }))}
-                          className={`px-3 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest border transition-all ${liquidSettings.importAmplitudeMode === modeKey ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-100'}`}
-                        >
-                          {IMPORT_AMPLITUDE_MODE_CONFIG[modeKey].label}
-                        </button>
-                      ))}
-                    </div>
-                    <div className="text-[10px] font-bold text-slate-500 leading-relaxed">{IMPORT_AMPLITUDE_MODE_CONFIG[liquidSettings.importAmplitudeMode].hint}</div>
-                  </div>
-                  {[
-                    { label: '流动速度', icon: Wind, key: 'speed', min: 0.1, max: 5, step: 0.1 },
-                    { label: '粘稠程度', icon: Zap, key: 'viscosity', min: 0.1, max: 1, step: 0.05 },
-                    { label: '光泽强度', icon: Sparkles, key: 'glossiness', min: 0, max: 1, step: 0.05 },
-                    { label: '波动幅度', icon: Waves, key: 'waveScale', min: 0.1, max: 2, step: 0.1 },
-                  ].map((item) => (
-                    <div key={item.key} className="space-y-2">
-                      <div className="flex justify-between items-center text-[10px] font-bold text-slate-500 uppercase">
-                        <span className="flex items-center gap-2"><item.icon className="w-3 h-3 opacity-60" /> {item.label}</span>
-                        <span className="bg-white px-1.5 py-0.5 rounded border border-slate-200">{((liquidSettings[item.key as keyof LiquidSettings] as number) * 100).toFixed(0)}%</span>
-                      </div>
-                      <input type="range" min={item.min} max={item.max} step={item.step} value={liquidSettings[item.key as keyof LiquidSettings] as number} onChange={(e) => setLiquidSettings((prev) => ({ ...prev, [item.key]: parseFloat(e.target.value) }))} className="w-full h-1.5 rounded-full bg-slate-200 appearance-none cursor-pointer" />
-                    </div>
-                  ))}
-                </div>
+                </>
               )}
             </div>
-          </Section>
-
-          <Section title="素材形态风格" icon={LayoutGrid} open={sectionOpen.style} onToggle={() => toggleSection('style')}>
-            <div className="bg-slate-50 rounded-2xl p-4 border border-slate-100 space-y-4">
-              <div className="grid grid-cols-3 gap-2">
+            <div className="rounded-[22px] bg-white/75 border border-white/90 p-1.5 shadow-[0_8px_18px_rgba(15,23,42,0.04)]">
+              <div className="grid grid-cols-3 gap-1.5">
                 {(Object.keys(SHAPE_STYLE_CONFIG) as ShapeStyle[]).map((styleKey) => (
                   <button
                     key={styleKey}
                     onClick={() => applyShapeStyleToArtboard(styleKey)}
-                    className={`px-3 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest border transition-all ${shapeStyle === styleKey ? 'bg-slate-900 text-white border-slate-900' : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-100'}`}
+                    className={`px-3 py-2.5 rounded-[18px] text-[11px] font-semibold border transition-all ${shapeStyle === styleKey ? 'bg-slate-950 text-white border-slate-950 shadow-[0_10px_24px_rgba(15,23,42,0.12)]' : 'bg-transparent text-slate-600 border-transparent hover:bg-slate-100/80'}`}
                   >
                     {SHAPE_STYLE_CONFIG[styleKey].label}
                   </button>
                 ))}
               </div>
-              <div className="space-y-2">
-                <div className="flex justify-between items-center text-[10px] font-bold text-slate-500 uppercase">
-                  <span>效果幅度</span>
-                  <span className="bg-white px-1.5 py-0.5 rounded border border-slate-200">{Math.round(shapeStyleIntensity * 100)}%</span>
-                </div>
-                <input
-                  type="range"
-                  min={0}
-                  max={1}
-                  step={0.01}
-                  value={shapeStyleIntensity}
-                  onChange={(e) => setShapeStyleIntensity(parseFloat(e.target.value))}
-                  className="w-full h-1.5 rounded-full bg-slate-200 appearance-none cursor-pointer"
-                />
-              </div>
-              <div className="text-[10px] font-bold text-slate-500 leading-relaxed">
-                当前画板元素 / 新建素材风格：<span className="text-slate-900">{SHAPE_STYLE_CONFIG[shapeStyle].label}</span>
-                <span className="text-slate-400"> · 幅度 {Math.round(shapeStyleIntensity * 100)}%</span>
-              </div>
             </div>
-          </Section>
-
-          <Section title="画板边界" icon={Layers3} open={sectionOpen.artboard} onToggle={() => toggleSection('artboard')}>
-            <div className="bg-slate-50 rounded-2xl p-4 border border-slate-100 space-y-4">
-              <button onClick={() => setArtboard((prev) => ({ ...prev, clipContent: !prev.clipContent }))} className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl border transition-all ${artboard.clipContent ? 'bg-slate-900 text-white border-slate-900' : 'bg-white text-slate-700 border-slate-200'}`}>
-                <span className="text-[10px] font-black uppercase tracking-widest">超出画板裁切</span>
-                <span className="text-[10px] font-black uppercase tracking-widest">{artboard.clipContent ? '开启' : '关闭'}</span>
-              </button>
-              {[
-                { key: 'width', label: '宽度', min: 400, max: 4000 },
-                { key: 'height', label: '高度', min: 400, max: 4000 },
-              ].map((item) => (
-                <div key={item.key} className="space-y-2">
-                  <div className="flex justify-between items-center text-[10px] font-bold text-slate-500 uppercase">
-                    <span>{item.label}</span>
-                    <span className="bg-white px-1.5 py-0.5 rounded border border-slate-200">{artboard[item.key as keyof ArtboardSettings]}px</span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <input type="range" min={item.min} max={item.max} step={10} value={artboard[item.key as keyof ArtboardSettings] as number} onChange={(e) => setArtboard((prev) => ({ ...prev, [item.key]: parseInt(e.target.value, 10) || item.min }))} className="flex-1 h-1.5 rounded-full bg-slate-200 appearance-none cursor-pointer" />
-                    <input type="number" min={item.min} max={item.max} step={10} value={artboard[item.key as keyof ArtboardSettings] as number} onChange={(e) => setArtboard((prev) => ({ ...prev, [item.key]: Math.min(item.max, Math.max(item.min, parseInt(e.target.value || '0', 10) || item.min)) }))} className="w-24 px-2 py-1.5 rounded-lg border border-slate-200 bg-white text-[11px] font-bold text-slate-700" />
-                  </div>
-                </div>
-              ))}
-              <button onClick={fitViewToArtboard} className="w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-xl bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 shadow-sm transition-all">
-                <Target className="w-4 h-4" />
-                <span className="text-[10px] font-black uppercase tracking-widest">适配到画板</span>
-              </button>
+            <div className="space-y-2">
+              <div className="flex justify-between items-center text-[10px] font-semibold text-slate-500 tracking-[0.12em]">
+                <span>形态幅度</span>
+                <span className="bg-white px-1.5 py-0.5 rounded border border-slate-200">{Math.round(shapeStyleIntensity * 100)}%</span>
+              </div>
+              <input
+                type="range"
+                min={0}
+                max={1}
+                step={0.01}
+                value={shapeStyleIntensity}
+                onChange={(e) => setShapeStyleIntensity(parseFloat(e.target.value))}
+                className="w-full h-1.5 rounded-full bg-slate-200 appearance-none cursor-pointer"
+              />
             </div>
-          </Section>
+          </div>
+        </Section>
 
-          <Section title="气泡预设" icon={LayoutGrid} open={sectionOpen.library} onToggle={() => toggleSection('library')}>
-            <div className="grid grid-cols-1 gap-2 pb-6">
-              {PRESET_DATA.map((shape) => (
-                <button key={shape.name} onClick={() => addElement(shape.path, shape.name)} className="group flex items-center justify-between p-3 rounded-xl hover:bg-slate-900 hover:text-white transition-all border border-slate-100 bg-white">
-                  <div className="flex items-center gap-3">
-                    <div className="w-9 h-9 rounded-lg bg-slate-50 flex items-center justify-center">
-                      <svg viewBox="-50 -50 100 100" className="w-5 h-5"><path d={presetPreviewPaths[shape.name] || shape.path} fill={activeColor} stroke="none" /></svg>
-                    </div>
-                    <span className="text-xs font-bold tracking-tight">{shape.name}</span>
-                  </div>
-                  <ChevronRight className="w-4 h-4 opacity-0 group-hover:opacity-40 transition-opacity" />
+        <Section title="接触" icon={Settings2} open={sectionOpen.physics} onToggle={() => toggleSection('physics')}>
+          <div className="bg-[rgba(246,247,251,0.92)] rounded-[26px] p-4 border border-white/90 space-y-5 shadow-[inset_0_1px_0_rgba(255,255,255,0.88),0_8px_24px_rgba(15,23,42,0.04)]">
+            <div className="space-y-2">
+              <div className="flex items-center gap-2 text-[10px] font-semibold tracking-[0.12em] text-slate-500">
+                <Link2 className="w-3.5 h-3.5 opacity-70" />
+                <span>接触模式</span>
+              </div>
+              <div className="rounded-[22px] bg-white/75 border border-white/90 p-1.5 shadow-[0_8px_18px_rgba(15,23,42,0.04)]">
+                <div className="grid grid-cols-3 gap-1.5">
+                {(Object.keys(CONTACT_MODE_CONFIG) as ContactMode[]).map((modeKey) => (
+                  <button
+                    key={modeKey}
+                    onClick={() => setContactMode(modeKey)}
+                    className={`px-3 py-2.5 rounded-[18px] text-[11px] font-semibold border transition-all ${contactMode === modeKey ? 'bg-slate-950 text-white border-slate-950 shadow-[0_10px_24px_rgba(15,23,42,0.12)]' : 'bg-transparent text-slate-600 border-transparent hover:bg-slate-100/80'}`}
+                  >
+                    {CONTACT_MODE_CONFIG[modeKey].label}
+                  </button>
+                ))}
+                </div>
+              </div>
+              <div className="text-[11px] font-medium text-slate-500 leading-relaxed">{CONTACT_MODE_CONFIG[contactMode].hint}</div>
+            </div>
+            {contactMode === 'negative' && [
+              { label: '轮廓圆润', icon: Waves, key: 'negativeRoundness', min: 0, max: 1, step: 0.01 },
+              { label: '块面颗粒', icon: Sparkles, key: 'negativeGrain', min: 0, max: 1, step: 0.01 },
+            ].map((item) => (
+              <div key={item.key} className="space-y-2">
+                <div className="flex justify-between items-center text-[10px] font-semibold text-slate-500 tracking-[0.12em]">
+                  <span className="flex items-center gap-2"><item.icon className="w-3 h-3 opacity-60" /> {item.label}</span>
+                  <span className="bg-white px-1.5 py-0.5 rounded border border-slate-200">{Math.round((contactSettings[item.key as keyof ContactSettings] as number) * 100)}%</span>
+                </div>
+                <input type="range" min={item.min} max={item.max} step={item.step} value={contactSettings[item.key as keyof ContactSettings] as number} onChange={(e) => setContactSettings((prev) => ({ ...prev, [item.key]: parseFloat(e.target.value) }))} className="w-full h-1.5 rounded-full bg-slate-200 appearance-none cursor-pointer" />
+              </div>
+            ))}
+            {contactMode === 'overlay' && [
+              { label: '叠压模糊', icon: Waves, key: 'overlayBlur', min: 0, max: 24, step: 0.5, format: (value: number) => value.toFixed(1).replace(/\.0$/, '') },
+              { label: '模糊强度', icon: Sun, key: 'overlayBlurOpacity', min: 0, max: 1, step: 0.01, format: (value: number) => `${Math.round(value * 100)}%` },
+            ].map((item) => (
+              <div key={item.key} className="space-y-2">
+                <div className="flex justify-between items-center text-[10px] font-semibold text-slate-500 tracking-[0.12em]">
+                  <span className="flex items-center gap-2"><item.icon className="w-3 h-3 opacity-60" /> {item.label}</span>
+                  <span className="bg-white px-1.5 py-0.5 rounded border border-slate-200">{item.format(contactSettings[item.key as keyof ContactSettings] as number)}</span>
+                </div>
+                <input type="range" min={item.min} max={item.max} step={item.step} value={contactSettings[item.key as keyof ContactSettings] as number} onChange={(e) => setContactSettings((prev) => ({ ...prev, [item.key]: parseFloat(e.target.value) }))} className="w-full h-1.5 rounded-full bg-slate-200 appearance-none cursor-pointer" />
+              </div>
+            ))}
+            {[
+              { label: '接触吸附', icon: Link2, key: 'contactSuction', min: 1, max: 45, step: 1 },
+              { label: '单体吸附', icon: User, key: 'individualSuction', min: 0, max: 25, step: 1 },
+              { label: '渐变深度', icon: Sliders, key: 'glowDepth', min: 1, max: 100, step: 1 },
+              { label: '渐变强度', icon: Sun, key: 'gradientShade', min: 0, max: 100, step: 1 },
+              { label: '边沿厚度', icon: Sliders, key: 'edgeThickness', min: 0.5, max: 15, step: 0.5 },
+              { label: '内部柔化', icon: Waves, key: 'innerSoftness', min: 0, max: 30, step: 0.5 },
+              { label: '线条抖动', icon: Waves, key: 'lineJitter', min: 0, max: 8, step: 0.1 },
+              { label: '整体强度', icon: Sparkles, key: 'intensity', min: 0.5, max: 3, step: 0.05 },
+              { label: '质感颗粒', icon: Waves, key: 'grain', min: 0, max: 1, step: 0.01 },
+            ].map((item) => (
+              <div key={item.key} className="space-y-2">
+                <div className="flex justify-between items-center text-[10px] font-semibold text-slate-500 tracking-[0.12em]">
+                  <span className="flex items-center gap-2"><item.icon className="w-3 h-3 opacity-60" /> {item.label}</span>
+                  <span className="bg-white px-1.5 py-0.5 rounded border border-slate-200">{typeof glowSettings[item.key as keyof GlowSettings] === 'number' ? Number(glowSettings[item.key as keyof GlowSettings]).toFixed(item.key === 'grain' ? 2 : 1).replace(/\.0$/, '') : ''}</span>
+                </div>
+                <input type="range" min={item.min} max={item.max} step={item.step} value={glowSettings[item.key as keyof GlowSettings] as number} onChange={(e) => setGlowSettings((prev) => ({ ...prev, [item.key]: parseFloat(e.target.value) }))} className="w-full h-1.5 rounded-full bg-slate-200 appearance-none cursor-pointer" />
+              </div>
+            ))}
+          </div>
+        </Section>
+
+        <Section title="动态" icon={Droplets} open={sectionOpen.motion} onToggle={() => toggleSection('motion')}>
+          <div className="bg-[rgba(246,247,251,0.92)] rounded-[26px] p-4 border border-white/90 space-y-5 shadow-[inset_0_1px_0_rgba(255,255,255,0.88),0_8px_24px_rgba(15,23,42,0.04)]">
+            <button onClick={() => setLiquidSettings((prev) => ({ ...prev, enabled: !prev.enabled }))} className={`w-full flex items-center justify-between px-4 py-3 rounded-2xl border transition-all ${liquidSettings.enabled ? 'bg-slate-950 text-white border-slate-950' : 'bg-white text-slate-700 border-slate-200'}`}>
+              <span className="text-[11px] font-semibold tracking-wide">液体动画</span>
+              <span className="text-[11px] font-semibold tracking-wide">{liquidSettings.enabled ? '开启' : '关闭'}</span>
+            </button>
+            <div className="rounded-[22px] bg-white/75 border border-white/90 p-1.5 shadow-[0_8px_18px_rgba(15,23,42,0.04)]">
+              <div className="grid grid-cols-2 gap-1.5">
+              {(Object.keys(MOTION_MODE_CONFIG) as MotionMode[]).map((modeKey) => (
+                <button
+                  key={modeKey}
+                  onClick={() => setLiquidSettings((prev) => ({ ...prev, mode: modeKey }))}
+                  className={`px-3 py-2.5 rounded-[18px] text-[11px] font-semibold border transition-all ${liquidSettings.mode === modeKey ? 'bg-slate-950 text-white border-slate-950 shadow-[0_10px_24px_rgba(15,23,42,0.12)]' : 'bg-transparent text-slate-600 border-transparent hover:bg-slate-100/80'}`}
+                >
+                  {MOTION_MODE_CONFIG[modeKey].label}
                 </button>
               ))}
+              </div>
             </div>
-          </Section>
-        </div>
-      )}
+            <div className="text-[11px] font-medium text-slate-500 leading-relaxed">{MOTION_MODE_CONFIG[liquidSettings.mode].hint}</div>
+            <div className="rounded-[22px] bg-white/75 border border-white/90 p-1.5 shadow-[0_8px_18px_rgba(15,23,42,0.04)]">
+              <div className="grid grid-cols-3 gap-1.5">
+              {(Object.keys(IMPORT_AMPLITUDE_MODE_CONFIG) as ImportAmplitudeMode[]).map((modeKey) => (
+                <button
+                  key={modeKey}
+                  onClick={() => setLiquidSettings((prev) => ({ ...prev, importAmplitudeMode: modeKey }))}
+                  className={`px-3 py-2 rounded-[18px] text-[10px] font-semibold border transition-all ${liquidSettings.importAmplitudeMode === modeKey ? 'bg-slate-900 text-white border-slate-900 shadow-[0_10px_24px_rgba(15,23,42,0.10)]' : 'bg-transparent text-slate-600 border-transparent hover:bg-slate-100/80'}`}
+                >
+                  {IMPORT_AMPLITUDE_MODE_CONFIG[modeKey].label}
+                </button>
+              ))}
+              </div>
+            </div>
+            {[
+              { label: '流动速度', icon: Wind, key: 'speed', min: 0.1, max: 5, step: 0.1 },
+              { label: '粘稠程度', icon: Zap, key: 'viscosity', min: 0.1, max: 1, step: 0.05 },
+              { label: '光泽强度', icon: Sparkles, key: 'glossiness', min: 0, max: 1, step: 0.05 },
+              { label: '波动幅度', icon: Waves, key: 'waveScale', min: 0.1, max: 2, step: 0.1 },
+            ].map((item) => (
+              <div key={item.key} className="space-y-2">
+                <div className="flex justify-between items-center text-[10px] font-semibold text-slate-500 tracking-[0.12em]">
+                  <span className="flex items-center gap-2"><item.icon className="w-3 h-3 opacity-60" /> {item.label}</span>
+                  <span className="bg-white px-1.5 py-0.5 rounded border border-slate-200">{((liquidSettings[item.key as keyof LiquidSettings] as number) * 100).toFixed(0)}%</span>
+                </div>
+                <input type="range" min={item.min} max={item.max} step={item.step} value={liquidSettings[item.key as keyof LiquidSettings] as number} onChange={(e) => setLiquidSettings((prev) => ({ ...prev, [item.key]: parseFloat(e.target.value) }))} className="w-full h-1.5 rounded-full bg-slate-200 appearance-none cursor-pointer" />
+              </div>
+            ))}
+          </div>
+        </Section>
+
+        <Section title="画板" icon={Layers3} open={sectionOpen.artboard} onToggle={() => toggleSection('artboard')}>
+          <div className="bg-[rgba(246,247,251,0.92)] rounded-[26px] p-4 border border-white/90 space-y-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.88),0_8px_24px_rgba(15,23,42,0.04)]">
+            <button onClick={() => setArtboard((prev) => ({ ...prev, clipContent: !prev.clipContent }))} className={`w-full flex items-center justify-between px-3 py-2.5 rounded-2xl border transition-all ${artboard.clipContent ? 'bg-slate-950 text-white border-slate-950' : 'bg-white text-slate-700 border-slate-200'}`}>
+              <span className="text-[11px] font-semibold tracking-wide">超出画板裁切</span>
+              <span className="text-[11px] font-semibold tracking-wide">{artboard.clipContent ? '开启' : '关闭'}</span>
+            </button>
+            <div className="flex items-center justify-between gap-3 rounded-[22px] bg-white/75 border border-white/90 p-3 shadow-[0_8px_18px_rgba(15,23,42,0.04)]">
+              <div className="space-y-1">
+                <div className="text-[10px] font-semibold text-slate-500 tracking-[0.12em]">画板背景色</div>
+                <div className="text-[11px] text-slate-400">预览与导出会同步使用这块底色</div>
+              </div>
+              <div className="relative shrink-0">
+                <input
+                  type="color"
+                  value={artboard.backgroundColor}
+                  onChange={(e) => applyArtboardColor(e.target.value)}
+                  className="absolute inset-0 w-11 h-11 opacity-0 cursor-pointer"
+                />
+                <div className="w-11 h-11 rounded-[16px] border-2 border-white shadow-sm" style={{ backgroundColor: artboard.backgroundColor }} />
+              </div>
+            </div>
+            <div className="rounded-[22px] bg-white/75 border border-white/90 p-3 shadow-[0_8px_18px_rgba(15,23,42,0.04)] space-y-3">
+              <div className="flex items-center justify-between gap-3">
+                <div className="text-[10px] font-semibold text-slate-500 tracking-[0.12em]">背景颜色输入</div>
+                <div className="rounded-[18px] bg-slate-100/90 p-1 flex items-center gap-1">
+                  {([
+                    ['rgb', 'RGB'],
+                    ['hex', 'HEX'],
+                    ['cmyk', 'CMYK'],
+                  ] as const).map(([mode, label]) => (
+                    <button
+                      key={mode}
+                      onClick={() => setArtboardColorInputMode(mode)}
+                      className={`px-3 py-1.5 rounded-[14px] text-[10px] font-semibold transition-all ${artboardColorInputMode === mode ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              {artboardColorInputMode === 'rgb' && (
+                <>
+                  <div className="text-[11px] text-slate-400">RGB 使用屏幕显示色值，范围 0 - 255</div>
+                  <div className="grid grid-cols-3 gap-2">
+                    {([
+                      ['r', 'R'],
+                      ['g', 'G'],
+                      ['b', 'B'],
+                    ] as const).map(([key, label]) => (
+                      <label key={key} className="space-y-1.5">
+                        <span className="block text-[10px] font-semibold text-slate-400 tracking-[0.12em]">{label}</span>
+                        <input
+                          type="number"
+                          min={0}
+                          max={255}
+                          value={artboardRgb[key]}
+                          onChange={(e) => updateArtboardRgbChannel(key, e.target.value)}
+                          className="w-full px-2 py-2 rounded-[16px] border border-slate-200 bg-white text-[12px] font-semibold text-slate-700 outline-none focus:border-slate-400"
+                        />
+                      </label>
+                    ))}
+                  </div>
+                </>
+              )}
+              {artboardColorInputMode === 'hex' && (
+                <>
+                  <div className="text-[11px] text-slate-400">HEX 是网页显示使用的实际颜色值</div>
+                  <input
+                    type="text"
+                    value={artboardHexDraft}
+                    onChange={(e) => setArtboardHexDraft(e.target.value.toUpperCase())}
+                    onBlur={commitArtboardHexDraft}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        commitArtboardHexDraft();
+                      }
+                    }}
+                    className="w-full px-3 py-2.5 rounded-[16px] border border-slate-200 bg-white text-[13px] font-semibold tracking-[0.08em] text-slate-700 outline-none focus:border-slate-400"
+                  />
+                </>
+              )}
+              {artboardColorInputMode === 'cmyk' && (
+                <>
+                  <div className="text-[11px] leading-relaxed text-slate-400">CMYK 为网页近似预览，用于输入参考印刷数值，不等同 Illustrator 的色彩管理结果。</div>
+                  <div className="grid grid-cols-4 gap-2">
+                    {([
+                      ['c', 'C'],
+                      ['m', 'M'],
+                      ['y', 'Y'],
+                      ['k', 'K'],
+                    ] as const).map(([key, label]) => (
+                      <label key={key} className="space-y-1.5">
+                        <span className="block text-[10px] font-semibold text-slate-400 tracking-[0.12em]">{label}</span>
+                        <input
+                          type="number"
+                          min={0}
+                          max={100}
+                          value={artboardCmyk[key]}
+                          onChange={(e) => updateArtboardCmykChannel(key, e.target.value)}
+                          className="w-full px-2 py-2 rounded-[16px] border border-slate-200 bg-white text-[12px] font-semibold text-slate-700 outline-none focus:border-slate-400"
+                        />
+                      </label>
+                    ))}
+                  </div>
+                </>
+              )}
+            </div>
+            {[
+              { key: 'width', label: '宽度', min: 400, max: 4000 },
+              { key: 'height', label: '高度', min: 400, max: 4000 },
+            ].map((item) => {
+              const pixelValue = artboard[item.key as keyof ArtboardSettings] as number;
+              const updateArtboardDimension = (nextPixels: number) => {
+                const clampedPixels = Math.min(item.max, Math.max(item.min, Math.round(nextPixels) || item.min));
+                setArtboard((prev) => ({ ...prev, [item.key]: clampedPixels }));
+              };
+              return (
+              <div key={item.key} className="space-y-2">
+                <div className="flex justify-between items-center text-[10px] font-semibold text-slate-500 tracking-[0.12em]">
+                  <span>{item.label}</span>
+                  <span className="bg-white px-1.5 py-0.5 rounded border border-slate-200">{pixelValue}px</span>
+                </div>
+                <div className="text-[11px] text-slate-400">{getMetricSizeLabel(pixelValue)}</div>
+                <div className="flex items-center gap-2">
+                  <input type="range" min={item.min} max={item.max} step={10} value={pixelValue} onChange={(e) => updateArtboardDimension(parseInt(e.target.value, 10) || item.min)} className="flex-1 h-1.5 rounded-full bg-slate-200 appearance-none cursor-pointer" />
+                </div>
+                <div className="grid grid-cols-3 gap-2">
+                  <label className="space-y-1">
+                    <span className="block text-[10px] font-semibold text-slate-400 tracking-[0.12em]">PX</span>
+                    <input
+                      type="number"
+                      min={item.min}
+                      max={item.max}
+                      step={10}
+                      value={pixelValue}
+                      onChange={(e) => updateArtboardDimension(parseFloat(e.target.value || '0'))}
+                      className="w-full px-2 py-1.5 rounded-2xl border border-slate-200 bg-white text-[11px] font-semibold text-slate-700"
+                    />
+                  </label>
+                  <label className="space-y-1">
+                    <span className="block text-[10px] font-semibold text-slate-400 tracking-[0.12em]">MM</span>
+                    <input
+                      type="number"
+                      min={pixelsToMillimeters(item.min)}
+                      max={pixelsToMillimeters(item.max)}
+                      step={1}
+                      value={pixelsToMillimeters(pixelValue).toFixed(1)}
+                      onChange={(e) => updateArtboardDimension(millimetersToPixels(parseFloat(e.target.value || '0')))}
+                      className="w-full px-2 py-1.5 rounded-2xl border border-slate-200 bg-white text-[11px] font-semibold text-slate-700"
+                    />
+                  </label>
+                  <label className="space-y-1">
+                    <span className="block text-[10px] font-semibold text-slate-400 tracking-[0.12em]">CM</span>
+                    <input
+                      type="number"
+                      min={pixelsToCentimeters(item.min)}
+                      max={pixelsToCentimeters(item.max)}
+                      step={0.1}
+                      value={pixelsToCentimeters(pixelValue).toFixed(2)}
+                      onChange={(e) => updateArtboardDimension(centimetersToPixels(parseFloat(e.target.value || '0')))}
+                      className="w-full px-2 py-1.5 rounded-2xl border border-slate-200 bg-white text-[11px] font-semibold text-slate-700"
+                    />
+                  </label>
+                </div>
+              </div>
+              );
+            })}
+            <button onClick={fitViewToArtboard} className="w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-2xl bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 shadow-sm transition-all">
+              <Target className="w-4 h-4" />
+              <span className="text-[11px] font-semibold tracking-wide">适配到画板</span>
+            </button>
+          </div>
+        </Section>
+      </div>
     </aside>
   );
 });
 
 const Toolbar = memo(function Toolbar({
   historyIndex,
-  fillCanvas,
-  fileInputRef,
-  handleFileUpload,
   isBrushMode,
   setIsBrushMode,
   isEditMode,
@@ -1641,67 +2007,66 @@ const Toolbar = memo(function Toolbar({
   setSelectedIds,
 }: ToolbarProps) {
   return (
-    <header className="h-16 bg-white border-b border-slate-200 px-5 md:px-8 flex justify-between items-center z-20 gap-4">
+    <header className="h-[78px] bg-white/80 backdrop-blur-2xl border-b border-white/70 px-6 md:px-8 flex justify-between items-center z-20 gap-4 shadow-[0_8px_30px_rgba(15,23,42,0.04)]">
       <div className="flex items-center gap-2 flex-wrap">
-        <button onClick={undo} disabled={historyIndex === 0} className="p-2 hover:bg-slate-100 rounded-xl text-slate-400 hover:text-slate-900 transition-all disabled:opacity-20" title="撤销 (Ctrl+Z)">
-          <Undo2 className="w-5 h-5" />
-        </button>
-        <div className="w-px h-5 bg-slate-200 mx-1" />
-        <button onClick={fillCanvas} className="flex items-center gap-2 px-3 py-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-600 rounded-xl transition-all border border-indigo-100 shadow-sm group" title="一键填充">
-          <Sparkles className="w-4 h-4" />
-          <span className="text-[10px] font-black uppercase tracking-widest">一键填充</span>
-        </button>
-        <button onClick={() => fileInputRef.current?.click()} className="flex items-center gap-2 px-3 py-2 bg-white hover:bg-slate-50 text-slate-600 rounded-xl transition-all border border-slate-200 shadow-sm">
-          <FileCode className="w-4 h-4" />
-          <span className="text-[10px] font-black uppercase tracking-widest">导入 SVG</span>
-        </button>
-        <input type="file" ref={fileInputRef} onChange={handleFileUpload} accept=".svg" className="hidden" />
+        <div className="flex items-center gap-2 rounded-[22px] bg-white/76 border border-white/90 px-2.5 py-2 shadow-[0_10px_26px_rgba(15,23,42,0.04)]">
+          <button onClick={undo} disabled={historyIndex === 0} className="p-2 hover:bg-slate-100 rounded-xl text-slate-400 hover:text-slate-900 transition-all disabled:opacity-20" title="撤销 (Ctrl+Z)">
+            <Undo2 className="w-5 h-5" />
+          </button>
+          <div className="w-px h-5 bg-slate-200 mx-1" />
+          <div className="hidden md:flex flex-col pr-2">
+            <span className="text-[11px] font-semibold tracking-[0.12em] text-slate-400">画布工具</span>
+            <span className="text-sm text-slate-500">绘制、编辑、层级、导出</span>
+          </div>
+        </div>
       </div>
 
       <div className="flex items-center gap-3 flex-wrap justify-end">
-        <button onClick={() => { setIsBrushMode((prev) => !prev); setIsEditMode(false); setBrushPoints([]); setIsDrawingBrush(false); }} className={`flex items-center gap-2 px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all border ${isBrushMode ? 'bg-indigo-600 text-white border-indigo-600 shadow-lg shadow-indigo-200' : 'bg-white text-slate-600 border-slate-200 hover:border-slate-400'}`}>
-          <Pencil className="w-4 h-4" />
-          {isBrushMode ? '绘图中...' : '画笔工具'}
-        </button>
-        <button onClick={() => { setIsEditMode((prev) => !prev); setIsBrushMode(false); setIsDrawingBrush(false); setBrushPoints([]); if (!isEditMode) setSelectedIds((prev) => prev.slice(0, 1)); }} className={`flex items-center gap-2 px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all border ${isEditMode ? 'bg-red-500 text-white border-red-500 shadow-lg shadow-red-200' : 'bg-white text-slate-600 border-slate-200 hover:border-slate-400'}`}>
-          <Maximize2 className="w-4 h-4" />
-          {isEditMode ? '退出编辑' : '曲率编辑'}
-        </button>
-        <button onClick={moveSelectedBackward} disabled={selectedIds.length === 0} className="px-3 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest border bg-white text-slate-600 border-slate-200 hover:border-slate-400 disabled:opacity-30">
-          下移
-        </button>
-        <button onClick={moveSelectedForward} disabled={selectedIds.length === 0} className="px-3 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest border bg-white text-slate-600 border-slate-200 hover:border-slate-400 disabled:opacity-30">
-          上移
-        </button>
-        <button onClick={deleteSelectedElements} disabled={selectedIds.length === 0} className="p-2 bg-red-50 text-red-500 rounded-xl hover:bg-red-500 hover:text-white transition-all disabled:opacity-20" title="删除">
-          <Trash2 className="w-5 h-5" />
-        </button>
-        <div className="flex bg-slate-900 rounded-xl p-1 shadow-md items-center gap-1">
-          <button onClick={downloadPNG} className="flex items-center gap-2 px-3 py-1.5 text-white/90 text-[9px] font-black uppercase tracking-widest hover:text-white">
+        <div className="flex items-center gap-1.5 rounded-[22px] bg-white/76 border border-white/90 p-1.5 shadow-[0_10px_26px_rgba(15,23,42,0.04)]">
+          <button onClick={() => { setIsBrushMode((prev) => !prev); setIsEditMode(false); setBrushPoints([]); setIsDrawingBrush(false); }} className={`flex items-center gap-2 px-4 py-2.5 rounded-[18px] text-[11px] font-semibold tracking-wide transition-all border ${isBrushMode ? 'bg-slate-950 text-white border-slate-950 shadow-[0_12px_30px_rgba(15,23,42,0.14)]' : 'bg-transparent text-slate-600 border-transparent hover:bg-slate-100/80'}`}>
+            <Pencil className="w-4 h-4" />
+            {isBrushMode ? '绘图中...' : '画笔工具'}
+          </button>
+          <button onClick={() => { setIsEditMode((prev) => !prev); setIsBrushMode(false); setIsDrawingBrush(false); setBrushPoints([]); if (!isEditMode) setSelectedIds((prev) => prev.slice(0, 1)); }} className={`flex items-center gap-2 px-4 py-2.5 rounded-[18px] text-[11px] font-semibold tracking-wide transition-all border ${isEditMode ? 'bg-slate-950 text-white border-slate-950 shadow-[0_12px_30px_rgba(15,23,42,0.14)]' : 'bg-transparent text-slate-600 border-transparent hover:bg-slate-100/80'}`}>
+            <Maximize2 className="w-4 h-4" />
+            {isEditMode ? '退出编辑' : '曲率编辑'}
+          </button>
+          <button onClick={moveSelectedBackward} disabled={selectedIds.length === 0} className="px-3 py-2.5 rounded-[18px] text-[11px] font-semibold tracking-wide border bg-transparent text-slate-600 border-transparent hover:bg-slate-100/80 disabled:opacity-30">
+            下移
+          </button>
+          <button onClick={moveSelectedForward} disabled={selectedIds.length === 0} className="px-3 py-2.5 rounded-[18px] text-[11px] font-semibold tracking-wide border bg-transparent text-slate-600 border-transparent hover:bg-slate-100/80 disabled:opacity-30">
+            上移
+          </button>
+          <button onClick={deleteSelectedElements} disabled={selectedIds.length === 0} className="p-2 text-red-500 rounded-[18px] hover:bg-red-50 transition-all disabled:opacity-20" title="删除">
+            <Trash2 className="w-5 h-5" />
+          </button>
+        </div>
+        <div className="flex bg-slate-950 rounded-[22px] p-1.5 shadow-[0_12px_30px_rgba(15,23,42,0.18)] items-center gap-1">
+          <button onClick={downloadPNG} className="flex items-center gap-2 px-3 py-1.5 text-white/90 text-[10px] font-semibold tracking-[0.12em] hover:text-white">
             <Download className="w-3 h-3" />
-            PNG
+            导出 PNG
           </button>
           <select
             value={pngExportScale}
             onChange={(e) => setPngExportScale(parseFloat(e.target.value))}
             className="px-2 py-1 rounded-lg border border-white/10 bg-white/10 text-[10px] font-black text-white/90"
-            title="PNG 倍率"
+            title="PNG 导出倍率"
           >
             {[1, 1.5, 2, 3, 4, 6].map((scale) => (
               <option key={scale} value={scale}>{scale}x</option>
             ))}
           </select>
-          <div className="px-2 text-[9px] font-black uppercase tracking-widest text-white/45 whitespace-nowrap border-r border-white/10">
+          <div className="px-2 text-[9px] font-semibold tracking-[0.12em] text-white/45 whitespace-nowrap border-r border-white/10">
             {pngOutputWidth} x {pngOutputHeight}
           </div>
-          <button onClick={downloadTransparentGif} disabled={isExportingGif} className="flex items-center gap-2 px-3 py-1.5 text-white/90 text-[9px] font-black uppercase tracking-widest hover:text-white disabled:opacity-50">
-            GIF
+          <button onClick={downloadTransparentGif} disabled={isExportingGif} className="flex items-center gap-2 px-3 py-1.5 text-white/90 text-[10px] font-semibold tracking-[0.12em] hover:text-white disabled:opacity-50">
+            导出 GIF
           </button>
           <select
             value={gifExportScale}
             onChange={(e) => setGifExportScale(parseFloat(e.target.value))}
             className="px-2 py-1 rounded-lg border border-white/10 bg-white/10 text-[10px] font-black text-white/90"
-            title="GIF 倍率"
+            title="GIF 导出倍率"
           >
             {[1, 1.5, 2, 3].map((scale) => (
               <option key={scale} value={scale}>{scale}x</option>
@@ -1717,7 +2082,7 @@ const Toolbar = memo(function Toolbar({
               <option key={frames} value={frames}>{frames} 帧</option>
             ))}
           </select>
-          <div className="px-2 text-[9px] font-black uppercase tracking-widest text-white/45 whitespace-nowrap">
+          <div className="px-2 text-[9px] font-semibold tracking-[0.12em] text-white/45 whitespace-nowrap">
             {gifOutputWidth} x {gifOutputHeight}
           </div>
         </div>
@@ -1792,8 +2157,8 @@ const Stage = memo(function Stage({
         .translateSelf(viewOffset.x + el.x * zoom, viewOffset.y + el.y * zoom)
         .rotateSelf(el.rotation)
         .scaleSelf(el.scale * zoom),
-      backgroundFill: null,
-    });
+        backgroundFill: null,
+      });
 
     setNegativeSceneHref(canvas.toDataURL('image/png'));
   }, [contactMode, contactSettings, elements, liquidSettings, overlapCutouts, time, viewOffset.x, viewOffset.y, viewportHeight, viewportWidth, zoom]);
@@ -1882,7 +2247,7 @@ const Stage = memo(function Stage({
             <rect x={-100000} y={artboardRect.y + artboardRect.height} width={200000} height={100000 - artboardRect.y - artboardRect.height} fill="#E2E8F0" fillOpacity={0.7} />
             <rect x={-100000} y={artboardRect.y} width={100000 + artboardRect.x} height={artboardRect.height} fill="#E2E8F0" fillOpacity={0.7} />
             <rect x={artboardRect.x + artboardRect.width} y={artboardRect.y} width={100000 - artboardRect.x - artboardRect.width} height={artboardRect.height} fill="#E2E8F0" fillOpacity={0.7} />
-            <rect x={artboardRect.x} y={artboardRect.y} width={artboardRect.width} height={artboardRect.height} fill="#ffffff" fillOpacity={0.96} stroke="#94a3b8" strokeWidth={1 / zoom} strokeDasharray={`${6 / zoom} ${6 / zoom}`} />
+            <rect x={artboardRect.x} y={artboardRect.y} width={artboardRect.width} height={artboardRect.height} fill={artboard.backgroundColor} stroke="#94a3b8" strokeWidth={1 / zoom} strokeDasharray={`${6 / zoom} ${6 / zoom}`} />
           </g>
 
           {contactMode === 'negative' ? (
@@ -1951,22 +2316,29 @@ const Stage = memo(function Stage({
               {selectedSingle.segments.map((seg, idx) => {
                 if (seg.type === 'Z') return null;
                 const isSelected = selectedPointIdx === idx;
+                const nextSeg = selectedSingle.segments[idx + 1];
+                const incomingHandle = seg.type === 'C' ? { x: seg.x2, y: seg.y2 } : null;
+                const outgoingHandle = nextSeg && nextSeg.type === 'C' ? { x: nextSeg.x1, y: nextSeg.y1 } : null;
                 const localHandleScale = Math.max(0.0001, selectedSingle.scale);
                 const hStroke = 1 / (zoom * localHandleScale);
                 const hRad = 5 / (zoom * localHandleScale);
                 const hitRad = 9 / (zoom * localHandleScale);
                 return (
                   <g key={`edit-${selectedSingle.id}-${idx}`}>
-                    {isSelected && seg.type === 'C' && (
+                    {isSelected && (
                       <>
-                        <line x1={seg.x} y1={seg.y} x2={seg.x2} y2={seg.y2} stroke="#6366f1" strokeWidth={hStroke} strokeDasharray="2 2" />
-                        <circle cx={seg.x2} cy={seg.y2} r={hitRad} fill="transparent" className="pointer-events-auto" style={{ touchAction: 'none' }} onPointerDown={(e) => handlePointerDown(e, selectedSingle.id, 'point', { elId: selectedSingle.id, segIndex: idx, prop: 'in' })} />
-                        <circle cx={seg.x2} cy={seg.y2} r={hRad * 0.85} fill="white" stroke="#6366f1" strokeWidth={hStroke} className="pointer-events-none" />
-                        {typeof seg.outX === 'number' && typeof seg.outY === 'number' && (
+                        {incomingHandle && (
                           <>
-                            <line x1={seg.x} y1={seg.y} x2={seg.outX} y2={seg.outY} stroke="#6366f1" strokeWidth={hStroke} strokeDasharray="2 2" />
-                            <circle cx={seg.outX} cy={seg.outY} r={hitRad} fill="transparent" className="pointer-events-auto" style={{ touchAction: 'none' }} onPointerDown={(e) => handlePointerDown(e, selectedSingle.id, 'point', { elId: selectedSingle.id, segIndex: idx, prop: 'out' })} />
-                            <circle cx={seg.outX} cy={seg.outY} r={hRad * 0.85} fill="white" stroke="#6366f1" strokeWidth={hStroke} className="pointer-events-none" />
+                            <line x1={seg.x} y1={seg.y} x2={incomingHandle.x} y2={incomingHandle.y} stroke="#6366f1" strokeWidth={hStroke} strokeDasharray="2 2" />
+                            <circle cx={incomingHandle.x} cy={incomingHandle.y} r={hitRad} fill="transparent" className="pointer-events-auto" style={{ touchAction: 'none' }} onPointerDown={(e) => handlePointerDown(e, selectedSingle.id, 'point', { elId: selectedSingle.id, segIndex: idx, prop: 'in' })} />
+                            <circle cx={incomingHandle.x} cy={incomingHandle.y} r={hRad * 0.85} fill="white" stroke="#6366f1" strokeWidth={hStroke} className="pointer-events-none" />
+                          </>
+                        )}
+                        {outgoingHandle && (
+                          <>
+                            <line x1={seg.x} y1={seg.y} x2={outgoingHandle.x} y2={outgoingHandle.y} stroke="#6366f1" strokeWidth={hStroke} strokeDasharray="2 2" />
+                            <circle cx={outgoingHandle.x} cy={outgoingHandle.y} r={hitRad} fill="transparent" className="pointer-events-auto" style={{ touchAction: 'none' }} onPointerDown={(e) => handlePointerDown(e, selectedSingle.id, 'point', { elId: selectedSingle.id, segIndex: idx, prop: 'out' })} />
+                            <circle cx={outgoingHandle.x} cy={outgoingHandle.y} r={hRad * 0.85} fill="white" stroke="#6366f1" strokeWidth={hStroke} className="pointer-events-none" />
                           </>
                         )}
                       </>
@@ -2063,7 +2435,7 @@ const Stage = memo(function Stage({
 
 export default function App() {
   const [elements, setElements] = useState<ElementItem[]>([]);
-  const [activeColor, setActiveColor] = useState('#ff4d00');
+  const [activeColor, setActiveColor] = useState('#f7da2e');
   const [palette] = useState(INITIAL_COLORS);
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
   const [isEditMode, setIsEditMode] = useState(false);
@@ -2097,7 +2469,7 @@ export default function App() {
   const [glowSettings, setGlowSettings] = useState<GlowSettings>(DEFAULT_GLOW_SETTINGS);
   const [contactSettings, setContactSettings] = useState<ContactSettings>(DEFAULT_CONTACT_SETTINGS);
   const [artboard, setArtboard] = useState<ArtboardSettings>(DEFAULT_ARTBOARD_SETTINGS);
-  const [shapeStyle, setShapeStyle] = useState<ShapeStyle>('organic');
+  const [shapeStyle, setShapeStyle] = useState<ShapeStyle>('polygon');
   const [shapeStyleIntensity, setShapeStyleIntensity] = useState(1);
   const [isExportingGif, setIsExportingGif] = useState(false);
   const [pngExportScale, setPngExportScale] = useState(2);
@@ -2353,7 +2725,24 @@ export default function App() {
     };
   }, [activeColor, artboardCenter.x, artboardCenter.y, nextId]);
 
-  const addElement = useCallback((pathData: string, name = '新元素', options?: { alignAmplitudeToArtboard?: boolean }) => {
+  const normalizeNewElementScale = useCallback((element: ElementItem) => {
+    const bounds = getSegmentsBounds(element.segments);
+    const currentMaxDimension = Math.max(bounds.width, bounds.height);
+    if (currentMaxDimension <= 0.001) return element;
+
+    const targetMaxDimension = Math.min(
+      260,
+      Math.max(180, Math.min(artboard.width, artboard.height) * 0.28),
+    );
+    if (currentMaxDimension >= targetMaxDimension) return element;
+
+    return {
+      ...element,
+      scale: element.scale * (targetMaxDimension / currentMaxDimension),
+    };
+  }, [artboard.height, artboard.width]);
+
+  const addElement = useCallback((pathData: string, name = '新元素', options?: { alignAmplitudeToArtboard?: boolean; preserveImportedShape?: boolean }) => {
     const baseElement = createElementFromPath(pathData, name);
     const motionBaseline = options?.alignAmplitudeToArtboard ? getArtboardMotionBaseline() : null;
     const profiledElement: ElementItem = motionBaseline === null
@@ -2368,19 +2757,21 @@ export default function App() {
             ),
           };
         })();
-    const styledPath = morphPathByStyle(profiledElement.basePath, shapeStyle, profiledElement.id, shapeStyleIntensity);
+    const styledPath = options?.preserveImportedShape
+      ? profiledElement.basePath
+      : morphPathByStyle(profiledElement.basePath, shapeStyle, profiledElement.id, shapeStyleIntensity);
     const styledSegments = parsePathToSegments(styledPath);
     const styledBounds = getSegmentsBounds(styledSegments);
-    const newElement: ElementItem = {
+    const newElement: ElementItem = normalizeNewElementScale({
       ...profiledElement,
       path: styledPath,
       segments: styledSegments,
       size: Math.max(styledBounds.width, styledBounds.height) / 2 || profiledElement.size,
-    };
+    });
     const next = [...elements, newElement];
     commitElements(next);
     setSelectedIds([newElement.id]);
-  }, [commitElements, createElementFromPath, elements, getArtboardMotionBaseline, liquidSettings.importAmplitudeMode, shapeStyle, shapeStyleIntensity]);
+  }, [commitElements, createElementFromPath, elements, getArtboardMotionBaseline, liquidSettings.importAmplitudeMode, normalizeNewElementScale, shapeStyle, shapeStyleIntensity]);
 
   const alignElementMotionToArtboard = useCallback((baseElement: ElementItem) => {
     const motionBaseline = getArtboardMotionBaseline();
@@ -2466,22 +2857,9 @@ export default function App() {
       return;
     }
 
-    const nextSegments = sourceSegments.filter((_, idx) => idx !== selectedPointIdx).map((seg) => ({ ...seg })) as Segment[];
-    for (let i = 0; i < nextSegments.length; i += 1) {
-      const seg = nextSegments[i];
-      if (seg.type === 'C') {
-        delete seg.outX;
-        delete seg.outY;
-      }
-    }
-    for (let i = 0; i < nextSegments.length - 1; i += 1) {
-      const seg = nextSegments[i];
-      const next = nextSegments[i + 1];
-      if (seg.type === 'C' && next.type === 'C') {
-        seg.outX = next.x1;
-        seg.outY = next.y1;
-      }
-    }
+    const nextSegments = syncOutgoingHandles(
+      sourceSegments.filter((_, idx) => idx !== selectedPointIdx).map((seg) => ({ ...seg })) as Segment[],
+    );
 
     const nextElements = elements.map((el) => el.id === selectedSingle.id ? { ...el, segments: nextSegments, path: segmentsToPath(nextSegments) } : el);
     commitElements(nextElements);
@@ -2509,7 +2887,7 @@ export default function App() {
           showMsg('无法在文件中找到有效路径');
           return;
         }
-        addElement(d, file.name.replace(/\.svg$/i, ''), { alignAmplitudeToArtboard: true });
+        addElement(d, file.name.replace(/\.svg$/i, ''), { alignAmplitudeToArtboard: true, preserveImportedShape: true });
         showMsg('导入成功');
       } catch {
         showMsg('解析失败，请检查 SVG 文件格式');
@@ -2599,11 +2977,13 @@ export default function App() {
         const brushAnchorTarget = getBrushAnchorTarget(referenceSize);
         const simplifiedPoints = simplifyBrushPoints(brushPoints, referenceSize);
         const brushAngularity = getBrushAngularity(simplifiedPoints);
-        const roundedPoints = brushAngularity > 0.42
+        const cornerIndexes = getBrushCornerIndexes(simplifiedPoints);
+        const roundedPoints = brushAngularity > 0.46
           ? simplifiedPoints
-          : chaikinSmoothClosed(simplifiedPoints, referenceSize < 240 ? 1 : 2);
-        const finalPoints = reducePointsToTarget(simplifyBrushPoints(roundedPoints, referenceSize), brushAnchorTarget);
-        const pathStr = buildSmoothClosedPath(finalPoints, brushAngularity > 0.42 ? 0.08 : 0.14);
+          : chaikinSmoothClosed(simplifiedPoints, 1);
+        const resimplifiedPoints = simplifyBrushPoints(roundedPoints, referenceSize);
+        const finalPoints = reducePointsToTargetPreservingIndices(resimplifiedPoints, brushAnchorTarget, cornerIndexes);
+        const pathStr = buildSmoothClosedPath(finalPoints, brushAngularity > 0.46 ? 0.075 : 0.11);
         const bounds = getSegmentsBounds(parsePathToSegments(pathStr));
         const newElementBase = createElementFromPath(pathStr, `画笔路径 ${elements.length + 1}`, bounds.centerX, bounds.centerY);
         const alignedBase = alignElementMotionToArtboard(newElementBase);
@@ -2614,7 +2994,12 @@ export default function App() {
         const styledPath = morphPathByStyle(stabilizedBase.basePath, shapeStyle, stabilizedBase.id, shapeStyleIntensity * 0.03);
         const styledSegments = parsePathToSegments(styledPath);
         const styledBounds = getSegmentsBounds(styledSegments);
-        const newElement: ElementItem = { ...stabilizedBase, path: styledPath, segments: styledSegments, size: Math.max(styledBounds.width, styledBounds.height) / 2 || stabilizedBase.size };
+        const newElement: ElementItem = normalizeNewElementScale({
+          ...stabilizedBase,
+          path: styledPath,
+          segments: styledSegments,
+          size: Math.max(styledBounds.width, styledBounds.height) / 2 || stabilizedBase.size,
+        });
         const next = [...elements, newElement];
         commitElements(next);
         setSelectedIds([newElement.id]);
@@ -2623,7 +3008,7 @@ export default function App() {
       setBrushPoints([]);
     }
     finishInteractions(elements);
-  }, [alignElementMotionToArtboard, brushPoints, commitElements, createElementFromPath, elements, finishInteractions, getArtboardMotionBaseline, isDrawingBrush, shapeStyle, shapeStyleIntensity]);
+  }, [alignElementMotionToArtboard, brushPoints, commitElements, createElementFromPath, elements, finishInteractions, getArtboardMotionBaseline, isDrawingBrush, normalizeNewElementScale, shapeStyle, shapeStyleIntensity]);
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -2788,7 +3173,6 @@ export default function App() {
         <defs>
           ${filterMarkup}
           ${overlapClipMarkup}
-          ${overlapMaskMarkup}
           <filter id="clean-fusion" filterUnits="userSpaceOnUse" x="-10000" y="-10000" width="20000" height="20000" color-interpolation-filters="sRGB">
             <feTurbulence type="turbulence" baseFrequency="0.04" numOctaves="2" result="tremorNoise" />
             <feDisplacementMap in="SourceGraphic" in2="tremorNoise" scale="${glowSettings.lineJitter}" xChannelSelector="R" yChannelSelector="G" result="jitteredSource" />
@@ -2814,13 +3198,13 @@ export default function App() {
           </filter>
           <clipPath id="${clipId}"><rect x="0" y="0" width="${width}" height="${height}" /></clipPath>
         </defs>
-        ${transparent ? '' : '<rect x="0" y="0" width="100%" height="100%" fill="#fcfcfb" />'}
+        ${transparent ? '' : `<rect x="0" y="0" width="100%" height="100%" fill="${escapeXml(artboard.backgroundColor)}" />`}
         <g ${artboard.clipContent ? `clip-path="url(#${clipId})"` : ''}>
           ${bodyMarkup}
         </g>
       </svg>
     `.trim();
-  }, [artboard.clipContent, artboard.height, artboard.width, artboardCenter.x, artboardCenter.y, computeLiquidFiltersAtTime, contactMode, contactSettings, elements, glowSettings.contactSuction, glowSettings.edgeThickness, glowSettings.glowDepth, glowSettings.gradientShade, glowSettings.grain, glowSettings.individualSuction, glowSettings.innerSoftness, glowSettings.intensity, glowSettings.lineJitter, liquidSettings.enabled, time]);
+  }, [artboard.backgroundColor, artboard.clipContent, artboard.height, artboard.width, artboardCenter.x, artboardCenter.y, computeLiquidFiltersAtTime, contactMode, contactSettings, elements, glowSettings.contactSuction, glowSettings.edgeThickness, glowSettings.glowDepth, glowSettings.gradientShade, glowSettings.grain, glowSettings.individualSuction, glowSettings.innerSoftness, glowSettings.intensity, glowSettings.lineJitter, liquidSettings.enabled, time]);
 
   const renderExportCanvas = useCallback((options?: { transparent?: boolean; sampleTime?: number; scale?: number }) => new Promise<HTMLCanvasElement>((resolve, reject) => {
     if (contactMode === 'negative') {
@@ -2850,7 +3234,7 @@ export default function App() {
           .translateSelf((el.x - artboardRect.x) * scale, (el.y - artboardRect.y) * scale)
           .rotateSelf(el.rotation)
           .scaleSelf(el.scale * scale),
-        backgroundFill: options?.transparent ? null : '#fcfcfb',
+        backgroundFill: options?.transparent ? null : artboard.backgroundColor,
       });
 
       resolve(canvas);
@@ -2889,17 +3273,26 @@ export default function App() {
       reject(new Error('导出画面渲染失败'));
     };
     img.src = url;
-  }), [artboard.height, artboard.width, artboardRect.x, artboardRect.y, buildExportSvgString, contactMode, contactSettings, elements, liquidSettings, time]);
+  }), [artboard.backgroundColor, artboard.height, artboard.width, artboardRect.x, artboardRect.y, buildExportSvgString, contactMode, contactSettings, elements, liquidSettings, time]);
 
   const downloadPNG = useCallback(async () => {
     try {
       const canvas = await renderExportCanvas({ scale: pngExportScale });
+      const blob = await new Promise<Blob>((resolve, reject) => {
+        canvas.toBlob((output) => {
+          if (output) resolve(output);
+          else reject(new Error('无法生成 PNG 文件'));
+        }, 'image/png');
+      });
       const link = document.createElement('a');
-      link.href = canvas.toDataURL('image/png');
+      link.href = URL.createObjectURL(blob);
       link.download = `高清导出-${pngOutputWidth}x${pngOutputHeight}-${Date.now()}.png`;
       link.click();
-    } catch {
-      showMsg('PNG 导出失败');
+      setTimeout(() => URL.revokeObjectURL(link.href), 0);
+      showMsg('PNG 导出完成');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '未知错误';
+      showMsg(`PNG 导出失败：${message}`);
     }
   }, [pngExportScale, pngOutputHeight, pngOutputWidth, renderExportCanvas, showMsg]);
 
@@ -3075,8 +3468,9 @@ export default function App() {
       link.click();
       setTimeout(() => URL.revokeObjectURL(link.href), 0);
       showMsg('GIF 导出完成');
-    } catch {
-      showMsg('GIF 导出失败');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '未知错误';
+      showMsg(`GIF 导出失败：${message}`);
     } finally {
       setIsExportingGif(false);
     }
@@ -3256,37 +3650,23 @@ export default function App() {
           seg.y = (origPointY ?? seg.y) + localDy;
           if ('x1' in seg) { seg.x1 = (origX1 ?? seg.x1) + localDx; seg.y1 = (origY1 ?? seg.y1) + localDy; }
           if ('x2' in seg) { seg.x2 = (origX2 ?? seg.x2) + localDx; seg.y2 = (origY2 ?? seg.y2) + localDy; }
-          if ('outX' in seg && typeof seg.outX === 'number' && typeof seg.outY === 'number') {
-            seg.outX = (origOutX ?? seg.outX) + localDx;
-            seg.outY = (origOutY ?? seg.outY) + localDy;
-          }
           if (nextSeg && nextSeg.type === 'C' && origNextX1 !== undefined && origNextY1 !== undefined) {
             nextSegs[segIndex + 1] = { ...nextSeg, x1: origNextX1 + localDx, y1: origNextY1 + localDy };
           }
         } else if (prop === 'in' && 'x2' in seg) {
           seg.x2 = (origX2 ?? seg.x2) + localDx;
           seg.y2 = (origY2 ?? seg.y2) + localDy;
-          if ('outX' in seg && typeof seg.outX === 'number' && typeof seg.outY === 'number') {
-            const hdx = seg.x2 - seg.x;
-            const hdy = seg.y2 - seg.y;
-            seg.outX = seg.x - hdx;
-            seg.outY = seg.y - hdy;
-            if (nextSeg && nextSeg.type === 'C') nextSegs[segIndex + 1] = { ...nextSeg, x1: seg.outX, y1: seg.outY };
-          }
-        } else if (prop === 'out' && 'outX' in seg) {
-          seg.outX = (origOutX ?? seg.outX ?? seg.x) + localDx;
-          seg.outY = (origOutY ?? seg.outY ?? seg.y) + localDy;
-          if (nextSeg && nextSeg.type === 'C') nextSegs[segIndex + 1] = { ...nextSeg, x1: seg.outX, y1: seg.outY };
-          if ('x2' in seg) {
-            const hdx = seg.outX - seg.x;
-            const hdy = seg.outY - seg.y;
-            seg.x2 = seg.x - hdx;
-            seg.y2 = seg.y - hdy;
-          }
+        } else if (prop === 'out' && nextSeg && nextSeg.type === 'C') {
+          nextSegs[segIndex + 1] = {
+            ...nextSeg,
+            x1: (origNextX1 ?? nextSeg.x1) + localDx,
+            y1: (origNextY1 ?? nextSeg.y1) + localDy,
+          };
         }
 
         nextSegs[segIndex] = seg as Segment;
-        return { ...el, segments: nextSegs, path: segmentsToPath(nextSegs) };
+        const syncedSegments = syncOutgoingHandles(nextSegs);
+        return { ...el, segments: syncedSegments, path: segmentsToPath(syncedSegments) };
       }));
       return;
     }
@@ -3362,46 +3742,47 @@ export default function App() {
   const liquidFilters = useMemo(() => computeLiquidFiltersAtTime(time), [computeLiquidFiltersAtTime, time]);
 
   return (
-    <div className="flex h-screen bg-[#F8F9FA] font-sans text-slate-700 overflow-hidden select-none antialiased">
-      {message && <div className="absolute top-24 left-1/2 -translate-x-1/2 bg-slate-900 text-white px-6 py-3 rounded-2xl text-xs font-bold shadow-2xl z-[60] pointer-events-none">{message}</div>}
+    <div className="h-screen bg-[radial-gradient(circle_at_top,_#ffffff_0%,_#f4f7fb_52%,_#edf2f8_100%)] font-sans text-slate-700 overflow-hidden select-none antialiased p-4">
+      {message && <div className="absolute top-10 left-1/2 -translate-x-1/2 bg-slate-950 text-white px-6 py-3 rounded-2xl text-xs font-semibold shadow-2xl z-[60] pointer-events-none">{message}</div>}
 
-      <Sidebar
-        activeColor={activeColor}
-        palette={palette}
-        selectedIds={selectedIds}
-        selectedIdSet={selectedIdSet}
-        elements={elements}
-        contactMode={contactMode}
-        setContactMode={setContactMode}
-        contactSettings={contactSettings}
-        setContactSettings={setContactSettings}
-        glowSettings={glowSettings}
-        setGlowSettings={setGlowSettings}
-        liquidSettings={liquidSettings}
-        setLiquidSettings={setLiquidSettings}
-        rerandomizeLiquidProfiles={rerandomizeLiquidProfiles}
-        artboard={artboard}
-        setArtboard={setArtboard}
-        fitViewToArtboard={fitViewToArtboard}
-        shapeStyle={shapeStyle}
-        shapeStyleIntensity={shapeStyleIntensity}
-        setShapeStyleIntensity={setShapeStyleIntensity}
-        applyShapeStyleToArtboard={applyShapeStyleToArtboard}
-        setActiveColor={setActiveColor}
-        commitElements={commitElements}
-        addElement={addElement}
-        sectionOpen={sectionOpen}
-        toggleSection={toggleSection}
-        collapsedSidebar={collapsedSidebar}
-        setCollapsedSidebar={setCollapsedSidebar}
-      />
-
-      <main className="flex-1 flex flex-col relative overflow-hidden">
-        <Toolbar
-          historyIndex={historyIndex}
+      <div className="flex h-full gap-4">
+        <Sidebar
+          activeColor={activeColor}
+          palette={palette}
+          selectedIds={selectedIds}
+          selectedIdSet={selectedIdSet}
+          elements={elements}
+          contactMode={contactMode}
+          setContactMode={setContactMode}
+          contactSettings={contactSettings}
+          setContactSettings={setContactSettings}
+          glowSettings={glowSettings}
+          setGlowSettings={setGlowSettings}
+          liquidSettings={liquidSettings}
+          setLiquidSettings={setLiquidSettings}
+          rerandomizeLiquidProfiles={rerandomizeLiquidProfiles}
+          artboard={artboard}
+          setArtboard={setArtboard}
+          fitViewToArtboard={fitViewToArtboard}
+          shapeStyle={shapeStyle}
+          shapeStyleIntensity={shapeStyleIntensity}
+          setShapeStyleIntensity={setShapeStyleIntensity}
+          applyShapeStyleToArtboard={applyShapeStyleToArtboard}
+          setActiveColor={setActiveColor}
+          commitElements={commitElements}
+          addElement={addElement}
+          sectionOpen={sectionOpen}
+          toggleSection={toggleSection}
+          collapsedSidebar={collapsedSidebar}
+          setCollapsedSidebar={setCollapsedSidebar}
           fillCanvas={fillCanvas}
           fileInputRef={fileInputRef}
           handleFileUpload={handleFileUpload}
+        />
+
+        <main className="flex-1 flex flex-col relative overflow-hidden bg-white/70 backdrop-blur-2xl border border-white/60 rounded-[32px] shadow-[0_24px_60px_rgba(15,23,42,0.08)]">
+        <Toolbar
+          historyIndex={historyIndex}
           isBrushMode={isBrushMode}
           setIsBrushMode={setIsBrushMode}
           isEditMode={isEditMode}
@@ -3463,7 +3844,42 @@ export default function App() {
           groupBounds={groupBounds}
           fitViewToArtboard={fitViewToArtboard}
         />
-      </main>
+        </main>
+
+        <InspectorPanel
+          activeColor={activeColor}
+          palette={palette}
+          selectedIds={selectedIds}
+          selectedIdSet={selectedIdSet}
+          elements={elements}
+          contactMode={contactMode}
+          setContactMode={setContactMode}
+          contactSettings={contactSettings}
+          setContactSettings={setContactSettings}
+          glowSettings={glowSettings}
+          setGlowSettings={setGlowSettings}
+          liquidSettings={liquidSettings}
+          setLiquidSettings={setLiquidSettings}
+          rerandomizeLiquidProfiles={rerandomizeLiquidProfiles}
+          artboard={artboard}
+          setArtboard={setArtboard}
+          fitViewToArtboard={fitViewToArtboard}
+          shapeStyle={shapeStyle}
+          shapeStyleIntensity={shapeStyleIntensity}
+          setShapeStyleIntensity={setShapeStyleIntensity}
+          applyShapeStyleToArtboard={applyShapeStyleToArtboard}
+          setActiveColor={setActiveColor}
+          commitElements={commitElements}
+          addElement={addElement}
+          sectionOpen={sectionOpen}
+          toggleSection={toggleSection}
+          collapsedSidebar={collapsedSidebar}
+          setCollapsedSidebar={setCollapsedSidebar}
+          fillCanvas={fillCanvas}
+          fileInputRef={fileInputRef}
+          handleFileUpload={handleFileUpload}
+        />
+      </div>
     </div>
   );
 }
