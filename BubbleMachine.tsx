@@ -17,6 +17,7 @@ import {
   User,
   Pencil,
   Undo2,
+  Redo2,
   ChevronRight,
   Settings2,
   LayoutGrid,
@@ -30,6 +31,7 @@ import {
   Download,
   Layers3,
   Wand2,
+  Type,
 } from 'lucide-react';
 
 type Point = { x: number; y: number };
@@ -81,9 +83,38 @@ type ElementItem = {
   y: number;
   rotation: number;
   scale: number;
+  layerOrder: number;
   color: string;
   size: number;
   liquidProfile: LiquidProfile;
+};
+
+type TextItem = {
+  id: number;
+  text: string;
+  x: number;
+  y: number;
+  fontSize: number;
+  scale: number;
+  rotation: number;
+  layerOrder: number;
+  color: string;
+  fontFamily: string;
+  fontWeight: number;
+  morphAmount: number;
+  roundnessAmount: number;
+  adhesionAmount: number;
+  grainAmount: number;
+};
+
+type HistorySnapshot = {
+  elements: ElementItem[];
+  textItems: TextItem[];
+};
+
+type ClipboardSnapshot = {
+  elements: ElementItem[];
+  textItems: TextItem[];
 };
 
 type GlowSettings = {
@@ -194,10 +225,18 @@ type SidebarProps = {
   fillCanvas: () => void;
   fileInputRef: React.RefObject<HTMLInputElement | null>;
   handleFileUpload: (e: React.ChangeEvent<HTMLInputElement>) => void;
+  addTextElement: () => void;
+  textItems?: TextItem[];
+  selectedTextItem?: TextItem | null;
+  selectedSingle?: ElementItem | null;
+  updateSelectedTextItem?: (updater: (prev: TextItem) => TextItem) => void;
+  textLensRange?: number;
+  setTextLensRange?: React.Dispatch<React.SetStateAction<number>>;
 };
 
 type ToolbarProps = {
   historyIndex: number;
+  historyLength: number;
   isBrushMode: boolean;
   setIsBrushMode: React.Dispatch<React.SetStateAction<boolean>>;
   isEditMode: boolean;
@@ -205,6 +244,7 @@ type ToolbarProps = {
   setBrushPoints: React.Dispatch<React.SetStateAction<Point[]>>;
   setIsDrawingBrush: React.Dispatch<React.SetStateAction<boolean>>;
   selectedIds: number[];
+  hasTextSelection: boolean;
   moveSelectedBackward: () => void;
   moveSelectedForward: () => void;
   deleteSelectedElements: () => void;
@@ -222,6 +262,7 @@ type ToolbarProps = {
   gifOutputWidth: number;
   gifOutputHeight: number;
   undo: () => void;
+  redo: () => void;
   setSelectedIds: React.Dispatch<React.SetStateAction<number[]>>;
 };
 
@@ -253,6 +294,8 @@ type StageProps = {
   artboard: ArtboardSettings;
   artboardRect: { x: number; y: number; width: number; height: number };
   elements: ElementItem[];
+  textItems: TextItem[];
+  selectedTextId: number | null;
   selectedIdSet: Set<number>;
   liquidSettings: LiquidSettings;
   brushPoints: Point[];
@@ -263,6 +306,8 @@ type StageProps = {
   selectedPointIdx: number | null;
   groupBounds: { minX: number; minY: number; maxX: number; maxY: number } | null;
   fitViewToArtboard: () => void;
+  textLensRange: number;
+  handleTextPointerDown: (e: React.PointerEvent, id: number, mode?: 'drag' | 'rotate' | 'scale') => void;
 };
 
 const PRESET_DATA: PresetItem[] = [
@@ -367,6 +412,15 @@ const SECTION_ICONS: Record<SectionKey, React.ComponentType<{ className?: string
   library: LayoutGrid,
 };
 
+const DEFAULT_TEXT_FONT_FAMILY = "-apple-system,BlinkMacSystemFont,'SF Pro Display','PingFang SC','Hiragino Sans GB','Microsoft YaHei',sans-serif";
+const DEFAULT_TEXT_COLOR = '#111827';
+const TEXT_FONT_OPTIONS = [
+  { label: '系统无衬线', value: "-apple-system,BlinkMacSystemFont,'SF Pro Display','PingFang SC','Hiragino Sans GB','Microsoft YaHei',sans-serif" },
+  { label: '思源黑体', value: "'Source Han Sans SC','Noto Sans CJK SC','PingFang SC','Hiragino Sans GB','Microsoft YaHei',sans-serif" },
+  { label: '思源宋体', value: "'Source Han Serif SC','Noto Serif CJK SC','Songti SC','STSong','SimSun',serif" },
+  { label: '系统衬线', value: "'Songti SC','STSong','Times New Roman',serif" },
+];
+
 const deepClone = <T,>(value: T): T => {
   if (typeof structuredClone === 'function') return structuredClone(value);
   return JSON.parse(JSON.stringify(value));
@@ -393,6 +447,63 @@ const syncOutgoingHandles = (segments: Segment[]) => {
     }
   }
   return segments;
+};
+
+const hasClosedSubpath = (segments: Segment[]) => segments.some((segment) => segment.type === 'Z');
+
+const getPreviousDrawableIndex = (segments: Segment[], fromIndex: number) => {
+  for (let index = fromIndex - 1; index >= 0; index -= 1) {
+    if (segments[index].type !== 'Z') return index;
+  }
+  if (!hasClosedSubpath(segments)) return null;
+  for (let index = segments.length - 1; index > fromIndex; index -= 1) {
+    if (segments[index].type !== 'Z') return index;
+  }
+  return null;
+};
+
+const getNextDrawableIndex = (segments: Segment[], fromIndex: number) => {
+  for (let index = fromIndex + 1; index < segments.length; index += 1) {
+    if (segments[index].type !== 'Z') return index;
+  }
+  if (!hasClosedSubpath(segments)) return null;
+  for (let index = 0; index < fromIndex; index += 1) {
+    if (segments[index].type !== 'Z') return index;
+  }
+  return null;
+};
+
+const getIncomingCurveIndex = (segments: Segment[], anchorIndex: number) => {
+  const current = segments[anchorIndex];
+  if (!current || current.type === 'Z') return null;
+  if (current.type === 'C') return anchorIndex;
+  const previousIndex = getPreviousDrawableIndex(segments, anchorIndex);
+  if (previousIndex === null) return null;
+  return segments[previousIndex].type === 'C' ? previousIndex : null;
+};
+
+const getOutgoingCurveIndex = (segments: Segment[], anchorIndex: number) => {
+  const nextIndex = getNextDrawableIndex(segments, anchorIndex);
+  if (nextIndex === null) return null;
+  return segments[nextIndex].type === 'C' ? nextIndex : null;
+};
+
+const getAnchorHandles = (segments: Segment[], anchorIndex: number) => {
+  const incomingCurveIndex = getIncomingCurveIndex(segments, anchorIndex);
+  const outgoingCurveIndex = getOutgoingCurveIndex(segments, anchorIndex);
+  const incomingCurve = incomingCurveIndex === null ? null : segments[incomingCurveIndex];
+  const outgoingCurve = outgoingCurveIndex === null ? null : segments[outgoingCurveIndex];
+
+  return {
+    incomingCurveIndex,
+    outgoingCurveIndex,
+    incomingHandle: incomingCurve && incomingCurve.type === 'C'
+      ? { x: incomingCurve.x2, y: incomingCurve.y2 }
+      : null,
+    outgoingHandle: outgoingCurve && outgoingCurve.type === 'C'
+      ? { x: outgoingCurve.x1, y: outgoingCurve.y1 }
+      : null,
+  };
 };
 
 const escapeXml = (value: string) => value
@@ -702,6 +813,145 @@ const getClientCanvasPoint = (e: { clientX: number; clientY: number }, rect: DOM
   y: (e.clientY - rect.top - viewOffset.y) / zoom,
 });
 
+const getTextApproxWidth = (textItem: TextItem) => {
+  const charWeight = /[\u4e00-\u9fff]/.test(textItem.text) ? 0.92 : 0.62;
+  return Math.max(textItem.fontSize * textItem.scale * 1.2, textItem.text.length * textItem.fontSize * textItem.scale * charWeight);
+};
+
+const getTextApproxHeight = (textItem: TextItem) => textItem.fontSize * textItem.scale * 1.2;
+const getTextLensScale = (range: number) => 1.08 + clamp01(range) * 0.98;
+const getTextLensBlur = (range: number) => 0.18 + clamp01(range) * 2.2;
+const getTextLensDisplacement = (range: number) => 2 + clamp01(range) * 16;
+const getTextStrokeWidth = (textItem: TextItem) => textItem.fontSize * 0.0045;
+const getRawTextWidth = (textItem: TextItem) => {
+  const charWeight = /[\u4e00-\u9fff]/.test(textItem.text) ? 0.92 : 0.62;
+  return Math.max(textItem.fontSize * 1.2, textItem.text.length * textItem.fontSize * charWeight);
+};
+
+const getTextEffectSettings = (morphAmount: number, blurAmount: number, adhesionAmount: number, time = 0) => {
+  const safeAmount = clamp01(morphAmount);
+  const safeBlur = clamp01(blurAmount);
+  const safeAdhesion = clamp01(adhesionAmount);
+  return {
+    baseFrequencyX: 0.004 + safeAmount * 0.01 + Math.sin(time * 0.65) * safeAmount * 0.001,
+    baseFrequencyY: 0.008 + safeAmount * 0.014 + Math.cos(time * 0.5) * safeAmount * 0.0012,
+    displacementScale: 6 + safeAmount * 28,
+    blur: safeBlur * 1.4,
+    adhesionBlur: 0.35 + safeAdhesion * 2.8,
+    adhesionAlphaSlope: 11 + safeAdhesion * 12,
+    adhesionAlphaIntercept: -4.5 - safeAdhesion * 7.5,
+  };
+};
+
+const createTextEffectBitmap = (textItem: TextItem, options?: { blur?: number; adhesion?: number }) => {
+  if (typeof document === 'undefined') return null;
+  const blur = options?.blur ?? 0;
+  const adhesion = clamp01(options?.adhesion ?? 0);
+  const rawWidth = getRawTextWidth(textItem);
+  const rawHeight = textItem.fontSize * 1.55;
+  const padding = Math.max(36, textItem.fontSize * (0.75 + adhesion * 1.25));
+  const width = Math.ceil(rawWidth + padding * 2);
+  const height = Math.ceil(rawHeight + padding * 2);
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  if (!ctx) return null;
+
+  ctx.font = `${textItem.fontWeight} ${textItem.fontSize}px ${textItem.fontFamily}`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = textItem.color;
+  ctx.strokeStyle = textItem.color;
+  ctx.lineWidth = getTextStrokeWidth(textItem);
+  ctx.lineJoin = 'round';
+  ctx.lineCap = 'round';
+  ctx.filter = blur > 0.001 ? `blur(${blur}px)` : 'none';
+
+  const centerX = width / 2;
+  const centerY = height / 2;
+  const smearRadius = adhesion * Math.max(4, textItem.fontSize * 0.15);
+  const smearCount = adhesion > 0.001 ? Math.round(22 + adhesion * 30) : 0;
+  for (let index = 0; index < smearCount; index += 1) {
+    const angle = (index / smearCount) * Math.PI * 2;
+    const dx = Math.cos(angle) * smearRadius;
+    const dy = Math.sin(angle) * smearRadius;
+    ctx.globalAlpha = 0.12 + adhesion * 0.14;
+    ctx.strokeText(textItem.text, centerX + dx, centerY + dy);
+    ctx.fillText(textItem.text, centerX + dx, centerY + dy);
+  }
+
+  if (adhesion > 0.001) {
+    const innerSmearRadius = smearRadius * 0.42;
+    const innerSmearCount = Math.round(16 + adhesion * 20);
+    for (let index = 0; index < innerSmearCount; index += 1) {
+      const angle = (index / innerSmearCount) * Math.PI * 2;
+      const dx = Math.cos(angle) * innerSmearRadius;
+      const dy = Math.sin(angle) * innerSmearRadius;
+      ctx.globalAlpha = 0.18 + adhesion * 0.18;
+      ctx.strokeText(textItem.text, centerX + dx, centerY + dy);
+      ctx.fillText(textItem.text, centerX + dx, centerY + dy);
+    }
+  }
+
+  ctx.globalAlpha = 1;
+  ctx.strokeText(textItem.text, centerX, centerY);
+  ctx.fillText(textItem.text, centerX, centerY);
+  const imageData = ctx.getImageData(0, 0, width, height);
+
+  return { canvas, width, height, imageData };
+};
+
+const drawTextDiffusionParticles = (
+  ctx: CanvasRenderingContext2D,
+  bitmap: { width: number; height: number; imageData: ImageData },
+  textItem: TextItem,
+  amount: number,
+) => {
+  const density = clamp01(amount);
+  if (density <= 0.001) return;
+
+  const { width, height, imageData } = bitmap;
+  const particles = Math.round(120 + density * 420);
+  const phaseSeed = textItem.id * 0.173;
+
+  ctx.save();
+  ctx.fillStyle = textItem.color;
+  for (let index = 0; index < particles; index += 1) {
+    const sampleX = Math.floor(seededUnit(phaseSeed + index * 1.37) * width);
+    const sampleY = Math.floor(seededUnit(phaseSeed + index * 2.11) * height);
+    const alphaIndex = (sampleY * width + sampleX) * 4 + 3;
+    if (imageData.data[alphaIndex] < 40) continue;
+
+    const baseAngle = seededUnit(phaseSeed + index * 3.17) * Math.PI * 2;
+    const distance = (2 + density * textItem.fontSize * 0.18) * (0.35 + seededUnit(phaseSeed + index * 4.07));
+    const radius = 0.5 + density * 1.8 + seededUnit(phaseSeed + index * 5.39) * 1.4;
+    const px = sampleX - width / 2 + Math.cos(baseAngle) * distance;
+    const py = sampleY - height / 2 + Math.sin(baseAngle) * distance;
+    ctx.globalAlpha = 0.04 + density * 0.16;
+    ctx.beginPath();
+    ctx.arc(px, py, radius, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.restore();
+};
+
+type SceneOrderItem =
+  | { kind: 'element'; id: number; layerOrder: number }
+  | { kind: 'text'; id: number; layerOrder: number };
+
+const getOrderedSceneItems = (elements: ElementItem[], textItems: TextItem[]) => (
+  [
+    ...elements.map<SceneOrderItem>((item) => ({ kind: 'element', id: item.id, layerOrder: item.layerOrder })),
+    ...textItems.map<SceneOrderItem>((item) => ({ kind: 'text', id: item.id, layerOrder: item.layerOrder })),
+  ].sort((a, b) => a.layerOrder - b.layerOrder || (a.kind === b.kind ? a.id - b.id : a.kind === 'element' ? -1 : 1))
+);
+
+const getNextSceneLayerOrder = (elements: ElementItem[], textItems: TextItem[]) => {
+  const allOrders = [...elements.map((item) => item.layerOrder), ...textItems.map((item) => item.layerOrder)];
+  return (allOrders.length ? Math.max(...allOrders) : 0) + 1;
+};
+
 const getElementEllipseRadiusAlongDirection = (el: ElementItem, direction: Point) => {
   const bounds = getElementLocalBounds(el);
   const rx = Math.max(1, bounds.width * el.scale / 2);
@@ -887,6 +1137,98 @@ const drawNegativeContactScene = ({
     ctx.restore();
   });
   ctx.restore();
+};
+
+const drawTextLensScene = ({
+  ctx,
+  textItems,
+  elements,
+  lensRange,
+  getTextPoint,
+  getMatrix,
+  getVisibleElementsForText,
+}: {
+  ctx: CanvasRenderingContext2D;
+  textItems: TextItem[];
+  elements: ElementItem[];
+  lensRange: number;
+  getTextPoint: (textItem: TextItem) => Point;
+  getMatrix: (el: ElementItem) => DOMMatrix;
+  getVisibleElementsForText: (textItem: TextItem) => ElementItem[];
+}) => {
+  const lensStrength = clamp01(lensRange);
+  const lensScale = getTextLensScale(lensStrength);
+  const lensBlur = getTextLensBlur(lensStrength);
+  const lensDisplacement = getTextLensDisplacement(lensStrength);
+  const lensAlpha = 0.96 + lensStrength * 0.04;
+  const refractionAlpha = 0.08 + lensStrength * 0.16;
+
+  textItems.forEach((textItem) => {
+    const point = getTextPoint(textItem);
+    const visibleElements = getVisibleElementsForText(textItem);
+    visibleElements.forEach((el) => {
+      const clipPath = new Path2D();
+      clipPath.addPath(new Path2D(el.path), getMatrix(el));
+      const lensCenter = point;
+      const morphAmount = clamp01(textItem.morphAmount ?? 0);
+      const blurAmount = clamp01(textItem.roundnessAmount ?? 0);
+      const adhesionAmount = clamp01(textItem.adhesionAmount ?? 0);
+      const grainAmount = clamp01(textItem.grainAmount ?? 0);
+      const refractionShiftX = lensDisplacement * 0.12;
+      const refractionShiftY = -lensDisplacement * 0.04;
+      const morphScaleX = 1 + morphAmount * 0.16;
+      const morphScaleY = 1 - morphAmount * 0.05;
+      const adhesionScale = 1 + adhesionAmount * 0.08;
+      const contentBlur = lensBlur * 0.7 + blurAmount * 4.8 + adhesionAmount * 1.8;
+      const textBitmap = createTextEffectBitmap(textItem, {
+        blur: contentBlur,
+        adhesion: adhesionAmount,
+        grain: grainAmount,
+      });
+      if (!textBitmap) return;
+
+      ctx.save();
+      ctx.clip(clipPath);
+
+      const renderWarpedBitmap = (alpha: number, offsetX = 0, offsetY = 0, extraBlur = 0) => {
+        const stripCount = Math.max(18, Math.round(26 + morphAmount * 36));
+        const stripHeight = textBitmap.height / stripCount;
+        ctx.save();
+        ctx.globalAlpha = alpha;
+        ctx.filter = extraBlur > 0.001 ? `blur(${extraBlur}px)` : 'none';
+        ctx.translate(lensCenter.x, lensCenter.y);
+        ctx.rotate(textItem.rotation * (Math.PI / 180));
+        ctx.scale(textItem.scale * lensScale * morphScaleX * adhesionScale, textItem.scale * lensScale * morphScaleY * adhesionScale);
+        ctx.translate(offsetX, offsetY);
+        for (let stripIndex = 0; stripIndex < stripCount; stripIndex += 1) {
+          const sy = stripIndex * stripHeight;
+          const t = stripIndex / Math.max(1, stripCount - 1);
+          const wave = Math.sin(t * Math.PI * 2 + textItem.id * 0.21) * morphAmount * textItem.fontSize * 0.22;
+          const counterWave = Math.cos(t * Math.PI * 3 + textItem.id * 0.11) * morphAmount * textItem.fontSize * 0.05;
+          const bandScaleX = 1 + Math.sin(t * Math.PI + textItem.id * 0.19) * morphAmount * 0.08;
+          const bandHeight = Math.max(1, stripHeight + 1);
+          const dx = -textBitmap.width / 2 + wave + refractionShiftX * 0.2 + counterWave;
+          const dy = -textBitmap.height / 2 + sy + refractionShiftY * 0.16;
+          ctx.drawImage(
+            textBitmap.canvas,
+            0,
+            sy,
+            textBitmap.width,
+            bandHeight,
+            dx,
+            dy,
+            textBitmap.width * bandScaleX,
+            bandHeight,
+          );
+        }
+        ctx.restore();
+      };
+
+      renderWarpedBitmap(lensAlpha, 0, 0, 0);
+      renderWarpedBitmap(refractionAlpha, refractionShiftX, refractionShiftY, Math.max(0.2, contentBlur * 0.18));
+      ctx.restore();
+    });
+  });
 };
 
 const buildTangencySeamPath = (center: Point, tangent: Point, normal: Point, halfLength: number, halfWidth: number) => {
@@ -1362,6 +1704,7 @@ const Sidebar = memo(function Sidebar({
   fillCanvas,
   fileInputRef,
   handleFileUpload,
+  addTextElement,
 }: SidebarProps) {
   const presetPreviewPaths = useMemo(() => (
     PRESET_DATA.reduce<Record<string, string>>((acc, shape) => {
@@ -1412,6 +1755,10 @@ const Sidebar = memo(function Sidebar({
               <button onClick={fitViewToArtboard} className="px-3 py-3 rounded-2xl bg-white/92 text-slate-700 text-[11px] font-semibold tracking-wide border border-slate-200/90 shadow-[0_10px_24px_rgba(15,23,42,0.04)]">适配画板</button>
               <button onClick={rerandomizeLiquidProfiles} className="px-3 py-3 rounded-2xl bg-white/92 text-slate-700 text-[11px] font-semibold tracking-wide border border-slate-200/90 shadow-[0_10px_24px_rgba(15,23,42,0.04)]">液体随机</button>
               <button onClick={() => fileInputRef.current?.click()} className="px-3 py-3 rounded-2xl bg-white/92 text-slate-700 text-[11px] font-semibold tracking-wide border border-slate-200/90 shadow-[0_10px_24px_rgba(15,23,42,0.04)]">导入 SVG</button>
+              <button onClick={addTextElement} className="col-span-2 px-3 py-3 rounded-2xl bg-white/92 text-slate-700 text-[11px] font-semibold tracking-wide border border-slate-200/90 shadow-[0_10px_24px_rgba(15,23,42,0.04)] flex items-center justify-center gap-2">
+                <Type className="w-4 h-4" />
+                添加文字
+              </button>
             </div>
             <input type="file" ref={fileInputRef} onChange={handleFileUpload} accept=".svg" className="hidden" />
           </div>
@@ -1462,6 +1809,12 @@ const InspectorPanel = memo(function InspectorPanel({
   commitElements,
   sectionOpen,
   toggleSection,
+  textItems = [],
+  selectedTextItem = null,
+  selectedSingle = null,
+  updateSelectedTextItem,
+  textLensRange = 0.4,
+  setTextLensRange,
 }: SidebarProps) {
   const activeCmyk = useMemo(() => hexToCmyk(activeColor), [activeColor]);
   const activeRgb = useMemo(() => hexToRgb(activeColor), [activeColor]);
@@ -1678,6 +2031,151 @@ const InspectorPanel = memo(function InspectorPanel({
                 className="w-full h-1.5 rounded-full bg-slate-200 appearance-none cursor-pointer"
               />
             </div>
+            {(textItems.length > 0 || selectedTextItem) && (
+              <div className="rounded-[22px] bg-white/75 border border-white/90 p-3 shadow-[0_8px_18px_rgba(15,23,42,0.04)] space-y-3">
+                <div className="flex items-center gap-2 text-[10px] font-semibold text-slate-500 tracking-[0.12em]">
+                  <Type className="w-3.5 h-3.5 opacity-70" />
+                  <span>文字透镜</span>
+                </div>
+                {selectedTextItem && updateSelectedTextItem ? (
+                  <>
+                    <label className="space-y-1.5 block">
+                      <span className="block text-[10px] font-semibold text-slate-400 tracking-[0.12em]">文字内容</span>
+                      <input
+                        type="text"
+                        value={selectedTextItem.text}
+                        onChange={(e) => updateSelectedTextItem((prev) => ({ ...prev, text: e.target.value || '文字' }))}
+                        className="w-full px-3 py-2.5 rounded-[16px] border border-slate-200 bg-white text-[13px] font-semibold text-slate-700 outline-none focus:border-slate-400"
+                      />
+                    </label>
+                    <label className="space-y-1.5 block">
+                      <span className="block text-[10px] font-semibold text-slate-400 tracking-[0.12em]">字号</span>
+                      <input
+                        type="number"
+                        min={18}
+                        max={240}
+                        step={1}
+                        value={Math.round(selectedTextItem.fontSize)}
+                        onChange={(e) => updateSelectedTextItem((prev) => ({ ...prev, fontSize: Math.max(18, Math.min(240, parseInt(e.target.value || '0', 10) || 18)) }))}
+                        className="w-full px-3 py-2.5 rounded-[16px] border border-slate-200 bg-white text-[13px] font-semibold text-slate-700 outline-none focus:border-slate-400"
+                      />
+                    </label>
+                    <label className="space-y-1.5 block">
+                      <span className="block text-[10px] font-semibold text-slate-400 tracking-[0.12em]">字体</span>
+                      <select
+                        value={selectedTextItem.fontFamily}
+                        onChange={(e) => updateSelectedTextItem((prev) => ({ ...prev, fontFamily: e.target.value }))}
+                        className="w-full px-3 py-2.5 rounded-[16px] border border-slate-200 bg-white text-[13px] font-semibold text-slate-700 outline-none focus:border-slate-400"
+                      >
+                        {TEXT_FONT_OPTIONS.map((font) => (
+                          <option key={font.label} value={font.value}>{font.label}</option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="space-y-1.5 block">
+                      <span className="block text-[10px] font-semibold text-slate-400 tracking-[0.12em]">字重</span>
+                      <select
+                        value={selectedTextItem.fontWeight}
+                        onChange={(e) => updateSelectedTextItem((prev) => ({ ...prev, fontWeight: parseInt(e.target.value, 10) || 400 }))}
+                        className="w-full px-3 py-2.5 rounded-[16px] border border-slate-200 bg-white text-[13px] font-semibold text-slate-700 outline-none focus:border-slate-400"
+                      >
+                        {[
+                          { label: '常规 400', value: 400 },
+                          { label: '中等 500', value: 500 },
+                          { label: '半粗 600', value: 600 },
+                          { label: '粗体 700', value: 700 },
+                          { label: '特粗 800', value: 800 },
+                        ].map((weight) => (
+                          <option key={weight.value} value={weight.value}>{weight.label}</option>
+                        ))}
+                      </select>
+                    </label>
+                    <div className="space-y-2">
+                      <div className="flex justify-between items-center text-[10px] font-semibold text-slate-500 tracking-[0.12em]">
+                        <span>文字形态</span>
+                        <span className="bg-white px-1.5 py-0.5 rounded border border-slate-200">{Math.round((selectedTextItem.morphAmount ?? 0) * 100)}%</span>
+                      </div>
+                      <input
+                        type="range"
+                        min={0}
+                        max={1}
+                        step={0.01}
+                        value={selectedTextItem.morphAmount ?? 0}
+                        onChange={(e) => updateSelectedTextItem((prev) => ({ ...prev, morphAmount: parseFloat(e.target.value) }))}
+                        className="w-full h-1.5 rounded-full bg-slate-200 appearance-none cursor-pointer"
+                      />
+                      <div className="text-[11px] text-slate-400 leading-relaxed">从原始字形逐渐过渡到更柔软、更像液体的文字轮廓。</div>
+                    </div>
+                    <div className="space-y-2">
+                      <div className="flex justify-between items-center text-[10px] font-semibold text-slate-500 tracking-[0.12em]">
+                        <span>文字模糊</span>
+                        <span className="bg-white px-1.5 py-0.5 rounded border border-slate-200">{Math.round((selectedTextItem.roundnessAmount ?? 0) * 100)}%</span>
+                      </div>
+                      <input
+                        type="range"
+                        min={0}
+                        max={1}
+                        step={0.01}
+                        value={selectedTextItem.roundnessAmount ?? 0}
+                        onChange={(e) => updateSelectedTextItem((prev) => ({ ...prev, roundnessAmount: parseFloat(e.target.value) }))}
+                        className="w-full h-1.5 rounded-full bg-slate-200 appearance-none cursor-pointer"
+                      />
+                      <div className="text-[11px] text-slate-400 leading-relaxed">让文字边缘逐渐产生更柔和的模糊晕开感。</div>
+                    </div>
+                    <div className="space-y-2">
+                      <div className="flex justify-between items-center text-[10px] font-semibold text-slate-500 tracking-[0.12em]">
+                        <span>吸附圆润</span>
+                        <span className="bg-white px-1.5 py-0.5 rounded border border-slate-200">{Math.round((selectedTextItem.adhesionAmount ?? 0) * 100)}%</span>
+                      </div>
+                      <input
+                        type="range"
+                        min={0}
+                        max={1}
+                        step={0.01}
+                        value={selectedTextItem.adhesionAmount ?? 0}
+                        onChange={(e) => updateSelectedTextItem((prev) => ({ ...prev, adhesionAmount: parseFloat(e.target.value) }))}
+                        className="w-full h-1.5 rounded-full bg-slate-200 appearance-none cursor-pointer"
+                      />
+                      <div className="text-[11px] text-slate-400 leading-relaxed">让字的细节逐渐融化并被重塑成更圆、更黏连的块面字形。</div>
+                    </div>
+                    <div className="space-y-2">
+                      <div className="flex justify-between items-center text-[10px] font-semibold text-slate-500 tracking-[0.12em]">
+                        <span>粒子效果</span>
+                        <span className="bg-white px-1.5 py-0.5 rounded border border-slate-200">{Math.round((selectedTextItem.grainAmount ?? 0) * 100)}%</span>
+                      </div>
+                      <input
+                        type="range"
+                        min={0}
+                        max={1}
+                        step={0.01}
+                        value={selectedTextItem.grainAmount ?? 0}
+                        onChange={(e) => updateSelectedTextItem((prev) => ({ ...prev, grainAmount: parseFloat(e.target.value) }))}
+                        className="w-full h-1.5 rounded-full bg-slate-200 appearance-none cursor-pointer"
+                      />
+                      <div className="text-[11px] text-slate-400 leading-relaxed">只在气泡内部的透镜字上加入颗粒感，让它更像被气泡表面折射后的质感。</div>
+                    </div>
+                  </>
+                ) : (
+                  <div className="text-[11px] text-slate-400">添加文字后，拖动到气泡上方即可预览局部凸透镜效果。</div>
+                )}
+                <div className="space-y-2">
+                  <div className="flex justify-between items-center text-[10px] font-semibold text-slate-500 tracking-[0.12em]">
+                    <span>折射强度</span>
+                    <span className="bg-white px-1.5 py-0.5 rounded border border-slate-200">{Math.round(textLensRange * 100)}%</span>
+                  </div>
+                  <input
+                    type="range"
+                    min={0}
+                    max={1}
+                    step={0.01}
+                    value={textLensRange}
+                    onChange={(e) => setTextLensRange?.(parseFloat(e.target.value))}
+                    className="w-full h-1.5 rounded-full bg-slate-200 appearance-none cursor-pointer"
+                  />
+                </div>
+                <div className="text-[11px] text-slate-400 leading-relaxed">仅在文字与气泡重叠的区域内，文字会出现局部放大、折射与模糊；气泡外文字保持原样。</div>
+              </div>
+            )}
           </div>
         </Section>
 
@@ -1796,6 +2294,45 @@ const InspectorPanel = memo(function InspectorPanel({
                 <input type="range" min={item.min} max={item.max} step={item.step} value={liquidSettings[item.key as keyof LiquidSettings] as number} onChange={(e) => setLiquidSettings((prev) => ({ ...prev, [item.key]: parseFloat(e.target.value) }))} className="w-full h-1.5 rounded-full bg-slate-200 appearance-none cursor-pointer" />
               </div>
             ))}
+            {selectedSingle && (
+              <div className="rounded-[22px] bg-white/75 border border-white/90 p-3 shadow-[0_8px_18px_rgba(15,23,42,0.04)] space-y-3">
+                <div className="flex items-center gap-2 text-[10px] font-semibold text-slate-500 tracking-[0.12em]">
+                  <Droplets className="w-3.5 h-3.5 opacity-70" />
+                  <span>当前元素动态</span>
+                </div>
+                {[
+                  { label: '单体速度', key: 'waveFactor', min: 0.4, max: 1.8, step: 0.01, value: selectedSingle.liquidProfile.waveFactor, format: (value: number) => `${Math.round(value * 100)}%` },
+                  { label: '单体幅度', key: 'amplitudeFactor', min: 0.4, max: 1.8, step: 0.01, value: selectedSingle.liquidProfile.amplitudeFactor, format: (value: number) => `${Math.round(value * 100)}%` },
+                  { label: '单体粘稠', key: 'viscosityFactor', min: 0.4, max: 1.6, step: 0.01, value: selectedSingle.liquidProfile.viscosityFactor, format: (value: number) => `${Math.round(value * 100)}%` },
+                  { label: '单体光泽', key: 'glossFactor', min: 0.4, max: 1.6, step: 0.01, value: selectedSingle.liquidProfile.glossFactor, format: (value: number) => `${Math.round(value * 100)}%` },
+                ].map((item) => (
+                  <div key={item.key} className="space-y-2">
+                    <div className="flex justify-between items-center text-[10px] font-semibold text-slate-500 tracking-[0.12em]">
+                      <span>{item.label}</span>
+                      <span className="bg-white px-1.5 py-0.5 rounded border border-slate-200">{item.format(item.value)}</span>
+                    </div>
+                    <input
+                      type="range"
+                      min={item.min}
+                      max={item.max}
+                      step={item.step}
+                      value={item.value}
+                      onChange={(e) => {
+                        const nextValue = parseFloat(e.target.value);
+                        const next = elements.map((el) => (
+                          el.id === selectedSingle.id
+                            ? { ...el, liquidProfile: { ...el.liquidProfile, [item.key]: nextValue } }
+                            : el
+                        ));
+                        commitElements(next);
+                      }}
+                      className="w-full h-1.5 rounded-full bg-slate-200 appearance-none cursor-pointer"
+                    />
+                  </div>
+                ))}
+                <div className="text-[11px] text-slate-400 leading-relaxed">只调整当前选中气泡的动态，不会影响其他素材。</div>
+              </div>
+            )}
           </div>
         </Section>
 
@@ -1980,6 +2517,7 @@ const InspectorPanel = memo(function InspectorPanel({
 
 const Toolbar = memo(function Toolbar({
   historyIndex,
+  historyLength,
   isBrushMode,
   setIsBrushMode,
   isEditMode,
@@ -1987,6 +2525,7 @@ const Toolbar = memo(function Toolbar({
   setBrushPoints,
   setIsDrawingBrush,
   selectedIds,
+  hasTextSelection,
   moveSelectedBackward,
   moveSelectedForward,
   deleteSelectedElements,
@@ -2004,6 +2543,7 @@ const Toolbar = memo(function Toolbar({
   gifOutputWidth,
   gifOutputHeight,
   undo,
+  redo,
   setSelectedIds,
 }: ToolbarProps) {
   return (
@@ -2012,6 +2552,9 @@ const Toolbar = memo(function Toolbar({
         <div className="flex items-center gap-2 rounded-[22px] bg-white/76 border border-white/90 px-2.5 py-2 shadow-[0_10px_26px_rgba(15,23,42,0.04)]">
           <button onClick={undo} disabled={historyIndex === 0} className="p-2 hover:bg-slate-100 rounded-xl text-slate-400 hover:text-slate-900 transition-all disabled:opacity-20" title="撤销 (Ctrl+Z)">
             <Undo2 className="w-5 h-5" />
+          </button>
+          <button onClick={redo} disabled={historyIndex >= historyLength - 1} className="p-2 hover:bg-slate-100 rounded-xl text-slate-400 hover:text-slate-900 transition-all disabled:opacity-20" title="返回 (Shift+Ctrl+Z)">
+            <Redo2 className="w-5 h-5" />
           </button>
           <div className="w-px h-5 bg-slate-200 mx-1" />
           <div className="hidden md:flex flex-col pr-2">
@@ -2031,13 +2574,13 @@ const Toolbar = memo(function Toolbar({
             <Maximize2 className="w-4 h-4" />
             {isEditMode ? '退出编辑' : '曲率编辑'}
           </button>
-          <button onClick={moveSelectedBackward} disabled={selectedIds.length === 0} className="px-3 py-2.5 rounded-[18px] text-[11px] font-semibold tracking-wide border bg-transparent text-slate-600 border-transparent hover:bg-slate-100/80 disabled:opacity-30">
+          <button onClick={moveSelectedBackward} disabled={selectedIds.length === 0 && !hasTextSelection} className="px-3 py-2.5 rounded-[18px] text-[11px] font-semibold tracking-wide border bg-transparent text-slate-600 border-transparent hover:bg-slate-100/80 disabled:opacity-30">
             下移
           </button>
-          <button onClick={moveSelectedForward} disabled={selectedIds.length === 0} className="px-3 py-2.5 rounded-[18px] text-[11px] font-semibold tracking-wide border bg-transparent text-slate-600 border-transparent hover:bg-slate-100/80 disabled:opacity-30">
+          <button onClick={moveSelectedForward} disabled={selectedIds.length === 0 && !hasTextSelection} className="px-3 py-2.5 rounded-[18px] text-[11px] font-semibold tracking-wide border bg-transparent text-slate-600 border-transparent hover:bg-slate-100/80 disabled:opacity-30">
             上移
           </button>
-          <button onClick={deleteSelectedElements} disabled={selectedIds.length === 0} className="p-2 text-red-500 rounded-[18px] hover:bg-red-50 transition-all disabled:opacity-20" title="删除">
+          <button onClick={deleteSelectedElements} disabled={selectedIds.length === 0 && !hasTextSelection} className="p-2 text-red-500 rounded-[18px] hover:bg-red-50 transition-all disabled:opacity-20" title="删除">
             <Trash2 className="w-5 h-5" />
           </button>
         </div>
@@ -2114,6 +2657,8 @@ const Stage = memo(function Stage({
   artboard,
   artboardRect,
   elements,
+  textItems,
+  selectedTextId,
   selectedIdSet,
   liquidSettings,
   brushPoints,
@@ -2124,11 +2669,64 @@ const Stage = memo(function Stage({
   selectedPointIdx,
   groupBounds,
   fitViewToArtboard,
+  textLensRange,
+  handleTextPointerDown,
 }: StageProps) {
-  const overlapCutouts = useMemo(() => (contactMode === 'fusion' ? [] : getPotentialOverlapPairs(elements)), [contactMode, elements]);
+  const elementsById = useMemo(() => new Map<number, ElementItem>(elements.map((el) => [el.id, el])), [elements]);
+  const textItemsById = useMemo(() => new Map<number, TextItem>(textItems.map((item) => [item.id, item])), [textItems]);
+  const elementsInLayerOrder = useMemo(() => [...elements].sort((a, b) => a.layerOrder - b.layerOrder || a.id - b.id), [elements]);
+  const orderedSceneItems = useMemo(() => getOrderedSceneItems(elements, textItems), [elements, textItems]);
+  const highestElementLayerOrder = useMemo(() => elementsInLayerOrder.reduce((max, el) => Math.max(max, el.layerOrder), -Infinity), [elementsInLayerOrder]);
+  const textItemsBehindBubbles = useMemo(() => (
+    textItems.filter((item) => item.layerOrder < highestElementLayerOrder)
+  ), [highestElementLayerOrder, textItems]);
+  const textItemsAboveBubbles = useMemo(() => (
+    textItems.filter((item) => item.layerOrder >= highestElementLayerOrder)
+  ), [highestElementLayerOrder, textItems]);
+  const overlapCutouts = useMemo(() => (contactMode === 'fusion' ? [] : getPotentialOverlapPairs(elementsInLayerOrder)), [contactMode, elementsInLayerOrder]);
   const [negativeSceneHref, setNegativeSceneHref] = useState<string | null>(null);
+  const [textBaseSceneHref, setTextBaseSceneHref] = useState<string | null>(null);
+  const [textLensSceneHref, setTextLensSceneHref] = useState<string | null>(null);
   const viewportWidth = canvasRef.current?.clientWidth ?? 1;
   const viewportHeight = canvasRef.current?.clientHeight ?? 1;
+
+  const renderTextSceneItem = useCallback((textItem: TextItem, keyPrefix = 'scene-text', options?: { applyEffects?: boolean }) => (
+    <g key={`${keyPrefix}-${textItem.id}`} transform={`translate(${textItem.x}, ${textItem.y}) rotate(${textItem.rotation}) scale(${textItem.scale})`} filter={options?.applyEffects !== false && ((textItem.morphAmount ?? 0) > 0.001 || (textItem.roundnessAmount ?? 0) > 0.001 || (textItem.adhesionAmount ?? 0) > 0.001) ? `url(#text-effect-${textItem.id})` : undefined}>
+      <text
+        x={0}
+        y={0}
+        fill={textItem.color}
+        fontSize={textItem.fontSize}
+        fontFamily={textItem.fontFamily}
+        fontWeight={textItem.fontWeight}
+        stroke={textItem.color}
+        strokeWidth={getTextStrokeWidth(textItem)}
+        paintOrder="stroke fill"
+        textAnchor="middle"
+        dominantBaseline="middle"
+      >
+        {textItem.text}
+      </text>
+    </g>
+  ), []);
+
+  const renderBubbleEdgeOverlay = useCallback((el: ElementItem, keyPrefix = 'bubble-edge') => {
+    const edgePath = contactMode === 'negative' ? getContactRenderPath(el, contactMode, contactSettings) : el.path;
+    const strokeWidth = Math.max(3.2, glowSettings.edgeThickness * 1.8);
+    return (
+      <g key={`${keyPrefix}-${el.id}`} transform={`translate(${el.x}, ${el.y}) rotate(${el.rotation}) scale(${el.scale})`} pointerEvents="none">
+        <path
+          d={edgePath}
+          fill="none"
+          stroke={el.color}
+          strokeWidth={strokeWidth}
+          strokeLinejoin="round"
+          strokeLinecap="round"
+          opacity={0.98}
+        />
+      </g>
+    );
+  }, [contactMode, contactSettings, glowSettings.edgeThickness]);
 
   useEffect(() => {
     if (contactMode !== 'negative') {
@@ -2163,10 +2761,135 @@ const Stage = memo(function Stage({
     setNegativeSceneHref(canvas.toDataURL('image/png'));
   }, [contactMode, contactSettings, elements, liquidSettings, overlapCutouts, time, viewOffset.x, viewOffset.y, viewportHeight, viewportWidth, zoom]);
 
+  useEffect(() => {
+    if (viewportWidth <= 1 || viewportHeight <= 1) {
+      setTextBaseSceneHref(null);
+      return;
+    }
+
+    const visibleTextItems = textItems.filter((textItem) => elementsInLayerOrder.some((el) => el.layerOrder > textItem.layerOrder));
+    if (!visibleTextItems.length) {
+      setTextBaseSceneHref(null);
+      return;
+    }
+
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.round(viewportWidth));
+    canvas.height = Math.max(1, Math.round(viewportHeight));
+    const ctx = canvas.getContext('2d');
+    if (!ctx) {
+      setTextBaseSceneHref(null);
+      return;
+    }
+
+    visibleTextItems.forEach((textItem) => {
+      ctx.save();
+      ctx.font = `${textItem.fontWeight} ${textItem.fontSize}px ${textItem.fontFamily}`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillStyle = textItem.color;
+      ctx.strokeStyle = textItem.color;
+      ctx.lineWidth = getTextStrokeWidth(textItem);
+      ctx.translate(viewOffset.x + textItem.x * zoom, viewOffset.y + textItem.y * zoom);
+      ctx.rotate(textItem.rotation * (Math.PI / 180));
+      ctx.scale(textItem.scale, textItem.scale);
+      ctx.strokeText(textItem.text, 0, 0);
+      ctx.fillText(textItem.text, 0, 0);
+      ctx.restore();
+
+      const visibleElements = elementsInLayerOrder.filter((el) => el.layerOrder > textItem.layerOrder);
+      if (visibleElements.length) {
+        ctx.save();
+        ctx.globalCompositeOperation = 'destination-out';
+        ctx.fillStyle = '#000000';
+        visibleElements.forEach((el) => {
+          const cutoutPath = new Path2D();
+          cutoutPath.addPath(new Path2D(el.path), new DOMMatrix()
+            .translateSelf(viewOffset.x + el.x * zoom, viewOffset.y + el.y * zoom)
+            .rotateSelf(el.rotation)
+            .scaleSelf(el.scale * zoom));
+          ctx.fill(cutoutPath);
+        });
+        ctx.restore();
+      }
+    });
+
+    setTextBaseSceneHref(canvas.toDataURL('image/png'));
+  }, [elementsInLayerOrder, textItems, viewOffset.x, viewOffset.y, viewportHeight, viewportWidth, zoom]);
+
+  useEffect(() => {
+    if (viewportWidth <= 1 || viewportHeight <= 1) {
+      setTextLensSceneHref(null);
+      return;
+    }
+
+    const visibleTextItems = textItems.filter((textItem) => elementsInLayerOrder.some((el) => el.layerOrder > textItem.layerOrder));
+    if (!visibleTextItems.length) {
+      setTextLensSceneHref(null);
+      return;
+    }
+
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.round(viewportWidth));
+    canvas.height = Math.max(1, Math.round(viewportHeight));
+    const ctx = canvas.getContext('2d');
+    if (!ctx) {
+      setTextLensSceneHref(null);
+      return;
+    }
+
+    drawTextLensScene({
+      ctx,
+      textItems: visibleTextItems,
+      elements,
+      lensRange: textLensRange,
+      getTextPoint: (textItem) => ({
+        x: viewOffset.x + textItem.x * zoom,
+        y: viewOffset.y + textItem.y * zoom,
+      }),
+      getMatrix: (el) => new DOMMatrix()
+        .translateSelf(viewOffset.x + el.x * zoom, viewOffset.y + el.y * zoom)
+        .rotateSelf(el.rotation)
+        .scaleSelf(el.scale * zoom),
+      getVisibleElementsForText: (textItem) => elementsInLayerOrder.filter((el) => el.layerOrder > textItem.layerOrder),
+    });
+
+    setTextLensSceneHref(canvas.toDataURL('image/png'));
+  }, [elements, elementsInLayerOrder, textItems, textLensRange, viewOffset.x, viewOffset.y, viewportHeight, viewportWidth, zoom]);
+
   return (
     <div className={`flex-1 relative ${isDraggingOver ? 'bg-slate-100/50' : ''}`} style={{ touchAction: 'none', cursor: isPanning ? 'grabbing' : isBrushMode || isEditMode || marquee ? 'crosshair' : scalingGroup ? 'nwse-resize' : 'default' }} onDragOver={(e) => { e.preventDefault(); setIsDraggingOver(true); }} onDragLeave={() => setIsDraggingOver(false)} onDrop={onDrop} onPointerDown={(e) => handlePointerDown(e, null)} onPointerMove={handlePointerMove} onPointerUp={handlePointerUp} onPointerLeave={handlePointerUp} onWheel={handleWheel} onContextMenu={(e) => e.preventDefault()} ref={canvasRef}>
       <svg className="w-full h-full pointer-events-none" style={{ touchAction: 'none' }}>
         <defs>
+          {textItems.filter((item) => (item.morphAmount ?? 0) > 0.001 || (item.roundnessAmount ?? 0) > 0.001 || (item.adhesionAmount ?? 0) > 0.001).map((textItem) => {
+            const effect = getTextEffectSettings(textItem.morphAmount ?? 0, textItem.roundnessAmount ?? 0, textItem.adhesionAmount ?? 0, time);
+            return (
+              <filter key={`text-effect-${textItem.id}`} id={`text-effect-${textItem.id}`} x="-60%" y="-60%" width="220%" height="220%">
+                {(textItem.adhesionAmount ?? 0) > 0.001 ? (
+                  <>
+                    <feGaussianBlur in="SourceGraphic" stdDeviation={effect.adhesionBlur} result="adhesionBlur" />
+                    <feColorMatrix
+                      in="adhesionBlur"
+                      type="matrix"
+                      values={`1 0 0 0 0 0 1 0 0 0 0 0 1 0 0 0 0 0 ${effect.adhesionAlphaSlope} ${effect.adhesionAlphaIntercept}`}
+                      result="adhesive"
+                    />
+                  </>
+                ) : (
+                  <feOffset in="SourceGraphic" dx="0" dy="0" result="adhesive" />
+                )}
+                {effect.blur > 0.001 ? <feGaussianBlur in="adhesive" stdDeviation={effect.blur} result="softened" /> : <feOffset in="adhesive" dx="0" dy="0" result="softened" />}
+                {(textItem.morphAmount ?? 0) > 0.001 ? (
+                  <>
+                    <feTurbulence type="fractalNoise" baseFrequency={`${effect.baseFrequencyX} ${effect.baseFrequencyY}`} numOctaves="2" seed={textItem.id % 997} result="noise" />
+                    <feDisplacementMap in="softened" in2="noise" scale={effect.displacementScale} xChannelSelector="R" yChannelSelector="G" />
+                  </>
+                ) : (
+                  <feOffset in="softened" dx="0" dy="0" />
+                )}
+              </filter>
+            );
+          })}
           {liquidFilters.map((item) => (
             <filter key={`liquid-flow-${item.id}`} id={`liquid-flow-${item.id}`} x="-150%" y="-150%" width="400%" height="400%">
               <feTurbulence type="fractalNoise" baseFrequency={item.baseFrequency} numOctaves="2" seed={item.id % 1000} result="noise" />
@@ -2252,6 +2975,17 @@ const Stage = memo(function Stage({
 
           {contactMode === 'negative' ? (
             <g clipPath={artboard.clipContent ? 'url(#workspace-artboard-clip)' : undefined}>
+              {textBaseSceneHref && (
+                <image
+                  href={textBaseSceneHref}
+                  x={-viewOffset.x / zoom}
+                  y={-viewOffset.y / zoom}
+                  width={viewportWidth / zoom}
+                  height={viewportHeight / zoom}
+                  preserveAspectRatio="none"
+                  pointerEvents="none"
+                />
+              )}
               {negativeSceneHref && (
                 <image
                   href={negativeSceneHref}
@@ -2268,10 +3002,36 @@ const Stage = memo(function Stage({
                   <path d={el.path} fill="transparent" stroke="none" />
                 </g>
               ))}
+              {textLensSceneHref && (
+                <image
+                  href={textLensSceneHref}
+                  x={-viewOffset.x / zoom}
+                  y={-viewOffset.y / zoom}
+                  width={viewportWidth / zoom}
+                  height={viewportHeight / zoom}
+                  preserveAspectRatio="none"
+                  pointerEvents="none"
+                />
+              )}
+              <g data-ui="true" pointerEvents="none">
+                {elementsInLayerOrder.map((el) => renderBubbleEdgeOverlay(el, 'negative-edge'))}
+              </g>
+              {textItemsAboveBubbles.map((textItem) => renderTextSceneItem(textItem, 'negative-front-text', { applyEffects: false }))}
             </g>
           ) : contactMode === 'overlay' ? (
             <g clipPath={artboard.clipContent ? 'url(#workspace-artboard-clip)' : undefined}>
-              {elements.map((el) => (
+              {textBaseSceneHref && (
+                <image
+                  href={textBaseSceneHref}
+                  x={-viewOffset.x / zoom}
+                  y={-viewOffset.y / zoom}
+                  width={viewportWidth / zoom}
+                  height={viewportHeight / zoom}
+                  preserveAspectRatio="none"
+                  pointerEvents="none"
+                />
+              )}
+              {elementsInLayerOrder.map((el) => (
                 <g key={el.id} filter="url(#clean-fusion)">
                   <g transform={`translate(${el.x}, ${el.y}) rotate(${el.rotation}) scale(${el.scale})`} onPointerDown={(e) => handlePointerDown(e, el.id, 'drag')}>
                     <path d={el.path} fill={el.color} stroke="none" opacity={selectedIdSet.has(el.id) ? 1 : 0.9} filter={liquidSettings.enabled ? `url(#liquid-flow-${el.id})` : 'none'} />
@@ -2291,14 +3051,111 @@ const Stage = memo(function Stage({
                   </g>
                 ))}
               </g>
+              {textLensSceneHref && (
+                <image
+                  href={textLensSceneHref}
+                  x={-viewOffset.x / zoom}
+                  y={-viewOffset.y / zoom}
+                  width={viewportWidth / zoom}
+                  height={viewportHeight / zoom}
+                  preserveAspectRatio="none"
+                  pointerEvents="none"
+                />
+              )}
+              <g data-ui="true" pointerEvents="none">
+                {elementsInLayerOrder.map((el) => renderBubbleEdgeOverlay(el, 'overlay-edge'))}
+              </g>
+              {textItemsAboveBubbles.map((textItem) => renderTextSceneItem(textItem, 'front-text', { applyEffects: false }))}
             </g>
           ) : (
-            <g filter="url(#clean-fusion)" clipPath={artboard.clipContent ? 'url(#workspace-artboard-clip)' : undefined}>
-              {elements.map((el) => (
-                <g key={el.id} transform={`translate(${el.x}, ${el.y}) rotate(${el.rotation}) scale(${el.scale})`} onPointerDown={(e) => handlePointerDown(e, el.id, 'drag')}>
-                  <path d={el.path} fill={el.color} stroke="none" opacity={selectedIdSet.has(el.id) ? 1 : 0.9} filter={liquidSettings.enabled ? `url(#liquid-flow-${el.id})` : 'none'} />
-                </g>
-              ))}
+            <>
+              <g clipPath={artboard.clipContent ? 'url(#workspace-artboard-clip)' : undefined}>
+                {textBaseSceneHref && (
+                  <image
+                    href={textBaseSceneHref}
+                    x={-viewOffset.x / zoom}
+                    y={-viewOffset.y / zoom}
+                    width={viewportWidth / zoom}
+                    height={viewportHeight / zoom}
+                    preserveAspectRatio="none"
+                    pointerEvents="none"
+                  />
+                )}
+              </g>
+              <g filter="url(#clean-fusion)" clipPath={artboard.clipContent ? 'url(#workspace-artboard-clip)' : undefined}>
+                {elementsInLayerOrder.map((el) => (
+                  <g key={el.id} transform={`translate(${el.x}, ${el.y}) rotate(${el.rotation}) scale(${el.scale})`} onPointerDown={(e) => handlePointerDown(e, el.id, 'drag')}>
+                    <path d={el.path} fill={el.color} stroke="none" opacity={selectedIdSet.has(el.id) ? 1 : 0.9} filter={liquidSettings.enabled ? `url(#liquid-flow-${el.id})` : 'none'} />
+                  </g>
+                ))}
+              </g>
+              <g clipPath={artboard.clipContent ? 'url(#workspace-artboard-clip)' : undefined}>
+                {textLensSceneHref && (
+                  <image
+                    href={textLensSceneHref}
+                    x={-viewOffset.x / zoom}
+                    y={-viewOffset.y / zoom}
+                    width={viewportWidth / zoom}
+                    height={viewportHeight / zoom}
+                    preserveAspectRatio="none"
+                    pointerEvents="none"
+                  />
+                )}
+              </g>
+              <g data-ui="true" pointerEvents="none" clipPath={artboard.clipContent ? 'url(#workspace-artboard-clip)' : undefined}>
+                {elementsInLayerOrder.map((el) => renderBubbleEdgeOverlay(el, 'fusion-edge'))}
+              </g>
+              <g clipPath={artboard.clipContent ? 'url(#workspace-artboard-clip)' : undefined}>
+                {textItemsAboveBubbles.map((textItem) => renderTextSceneItem(textItem, 'front-text', { applyEffects: false }))}
+              </g>
+            </>
+          )}
+
+          {textItems.length > 0 && (
+            <g data-ui="true" clipPath={artboard.clipContent ? 'url(#workspace-artboard-clip)' : undefined}>
+              {textItems.map((textItem) => {
+                const halfWidth = getTextApproxWidth(textItem) / 2;
+                const halfHeight = getTextApproxHeight(textItem) / 2;
+                const selectionPad = 10 / zoom;
+                const handleRadius = 6 / zoom;
+                const handleStroke = 1.4 / zoom;
+                const rotateDistance = 26 / zoom;
+                return (
+                  <g key={`text-${textItem.id}`} transform={`translate(${textItem.x}, ${textItem.y}) rotate(${textItem.rotation}) scale(${textItem.scale})`}>
+                    <rect
+                      x={-halfWidth - selectionPad}
+                      y={-halfHeight - selectionPad}
+                      width={halfWidth * 2 + selectionPad * 2}
+                      height={halfHeight * 2 + selectionPad * 2}
+                      rx={10 / zoom}
+                      fill="transparent"
+                      className="pointer-events-auto"
+                      style={{ touchAction: 'none' }}
+                      onPointerDown={(e) => handleTextPointerDown(e, textItem.id, 'drag')}
+                    />
+                    {selectedTextId === textItem.id && (
+                      <>
+                        <rect
+                          x={-halfWidth - selectionPad}
+                          y={-halfHeight - selectionPad}
+                          width={halfWidth * 2 + selectionPad * 2}
+                          height={halfHeight * 2 + selectionPad * 2}
+                          rx={10 / zoom}
+                          fill="none"
+                          stroke="#3b82f6"
+                          strokeWidth={1 / (zoom * Math.max(textItem.scale, 0.0001))}
+                          strokeDasharray={`${4 / zoom} ${4 / zoom}`}
+                          pointerEvents="none"
+                          opacity={0.7}
+                        />
+                        <line x1={0} y1={-halfHeight - selectionPad} x2={0} y2={-halfHeight - selectionPad - rotateDistance} stroke="#3b82f6" strokeWidth={handleStroke / Math.max(textItem.scale, 0.0001)} strokeDasharray={`${2 / zoom} ${2 / zoom}`} pointerEvents="none" />
+                        <circle cx={0} cy={-halfHeight - selectionPad - rotateDistance} r={handleRadius / Math.max(textItem.scale, 0.0001)} fill="white" stroke="#3b82f6" strokeWidth={handleStroke / Math.max(textItem.scale, 0.0001)} className="pointer-events-auto" style={{ touchAction: 'none' }} onPointerDown={(e) => handleTextPointerDown(e, textItem.id, 'rotate')} />
+                        <circle cx={halfWidth + selectionPad} cy={halfHeight + selectionPad} r={handleRadius / Math.max(textItem.scale, 0.0001)} fill="white" stroke="#3b82f6" strokeWidth={handleStroke / Math.max(textItem.scale, 0.0001)} className="pointer-events-auto" style={{ touchAction: 'none' }} onPointerDown={(e) => handleTextPointerDown(e, textItem.id, 'scale')} />
+                      </>
+                    )}
+                  </g>
+                );
+              })}
             </g>
           )}
 
@@ -2316,9 +3173,7 @@ const Stage = memo(function Stage({
               {selectedSingle.segments.map((seg, idx) => {
                 if (seg.type === 'Z') return null;
                 const isSelected = selectedPointIdx === idx;
-                const nextSeg = selectedSingle.segments[idx + 1];
-                const incomingHandle = seg.type === 'C' ? { x: seg.x2, y: seg.y2 } : null;
-                const outgoingHandle = nextSeg && nextSeg.type === 'C' ? { x: nextSeg.x1, y: nextSeg.y1 } : null;
+                const { incomingHandle, outgoingHandle } = getAnchorHandles(selectedSingle.segments, idx);
                 const localHandleScale = Math.max(0.0001, selectedSingle.scale);
                 const hStroke = 1 / (zoom * localHandleScale);
                 const hRad = 5 / (zoom * localHandleScale);
@@ -2435,6 +3290,7 @@ const Stage = memo(function Stage({
 
 export default function App() {
   const [elements, setElements] = useState<ElementItem[]>([]);
+  const [textItems, setTextItems] = useState<TextItem[]>([]);
   const [activeColor, setActiveColor] = useState('#f7da2e');
   const [palette] = useState(INITIAL_COLORS);
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
@@ -2445,7 +3301,7 @@ export default function App() {
   const [activePoint, setActivePoint] = useState<ActivePointState | null>(null);
   const [selectedPointIdx, setSelectedPointIdx] = useState<number | null>(null);
   const [marquee, setMarquee] = useState<MarqueeState | null>(null);
-  const [history, setHistory] = useState<ElementItem[][]>([[]]);
+  const [history, setHistory] = useState<HistorySnapshot[]>([{ elements: [], textItems: [] }]);
   const [historyIndex, setHistoryIndex] = useState(0);
   const [viewOffset, setViewOffset] = useState<Point>({ x: 0, y: 0 });
   const [zoom, setZoom] = useState(1);
@@ -2463,6 +3319,14 @@ export default function App() {
   const [initialStates, setInitialStates] = useState<ElementItem[]>([]);
   const [isDraggingOver, setIsDraggingOver] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+  const [selectedTextId, setSelectedTextId] = useState<number | null>(null);
+  const [draggingTextId, setDraggingTextId] = useState<number | null>(null);
+  const [rotatingTextId, setRotatingTextId] = useState<number | null>(null);
+  const [scalingTextId, setScalingTextId] = useState<number | null>(null);
+  const [textInitialScale, setTextInitialScale] = useState(1);
+  const [textInitialDist, setTextInitialDist] = useState(0);
+  const [textRotationSnap, setTextRotationSnap] = useState({ initialRotation: 0, startAngle: 0 });
+  const [textLensRange, setTextLensRange] = useState(0.42);
   const [rotationSnap, setRotationSnap] = useState({ initialRotation: 0, startAngle: 0 });
   const [liquidSettings, setLiquidSettings] = useState<LiquidSettings>(DEFAULT_LIQUID_SETTINGS);
   const [contactMode, setContactMode] = useState<ContactMode>('fusion');
@@ -2491,20 +3355,29 @@ export default function App() {
   const messageTimerRef = useRef<number | null>(null);
   const idRef = useRef(1);
   const historyIndexRef = useRef(0);
+  const elementsRef = useRef<ElementItem[]>([]);
+  const textItemsRef = useRef<TextItem[]>([]);
   const dragStartPositionsRef = useRef<Record<number, Point>>({});
   const dragPointerStartRef = useRef<Point>({ x: 0, y: 0 });
   const dragSelectedIdsRef = useRef<number[]>([]);
+  const textDragOffsetRef = useRef<Point>({ x: 0, y: 0 });
+  const clipboardRef = useRef<ClipboardSnapshot | null>(null);
+  const clipboardPasteCountRef = useRef(0);
   const hasPendingHistoryRef = useRef(false);
 
   const time = useAnimationTime(liquidSettings.enabled, 30);
   const selectedIdSet = useMemo(() => new Set(selectedIds), [selectedIds]);
   const elementsById = useMemo(() => new Map<number, ElementItem>(elements.map((el) => [el.id, el])), [elements]);
+  const textItemsById = useMemo(() => new Map<number, TextItem>(textItems.map((item) => [item.id, item])), [textItems]);
   const selectedElements = useMemo(() => elements.filter((el) => selectedIdSet.has(el.id)), [elements, selectedIdSet]);
+  const elementsInLayerOrder = useMemo(() => [...elements].sort((a, b) => a.layerOrder - b.layerOrder || a.id - b.id), [elements]);
+  const orderedSceneItems = useMemo(() => getOrderedSceneItems(elements, textItems), [elements, textItems]);
 
   const selectedSingle = useMemo<ElementItem | null>(() => {
     if (selectedIds.length !== 1) return null;
     return elementsById.get(selectedIds[0]) || null;
   }, [elementsById, selectedIds]);
+  const selectedTextItem = useMemo(() => textItems.find((item) => item.id === selectedTextId) || null, [selectedTextId, textItems]);
 
   const groupBounds = useMemo(() => {
     if (selectedElements.length <= 1) return null;
@@ -2619,14 +3492,27 @@ export default function App() {
   }, [historyIndex]);
 
   useEffect(() => {
+    elementsRef.current = elements;
+  }, [elements]);
+
+  useEffect(() => {
+    textItemsRef.current = textItems;
+  }, [textItems]);
+
+  useEffect(() => {
     fitViewToArtboard();
   }, [fitViewToArtboard]);
 
-  const saveToHistory = useCallback((currentElements: ElementItem[]) => {
+  const buildHistorySnapshot = useCallback((currentElements = elementsRef.current, currentTextItems = textItemsRef.current): HistorySnapshot => ({
+    elements: deepClone(currentElements),
+    textItems: deepClone(currentTextItems),
+  }), []);
+
+  const saveToHistory = useCallback((scene?: { elements?: ElementItem[]; textItems?: TextItem[] }) => {
     setHistory((prev) => {
       const currentIndex = historyIndexRef.current;
       const sliced = prev.slice(0, currentIndex + 1);
-      const snapshot = deepClone(currentElements);
+      const snapshot = buildHistorySnapshot(scene?.elements ?? elementsRef.current, scene?.textItems ?? textItemsRef.current);
       const last = sliced[sliced.length - 1] || [];
       if (JSON.stringify(last) === JSON.stringify(snapshot)) return prev;
       const nextHistory = [...sliced, snapshot];
@@ -2635,21 +3521,42 @@ export default function App() {
       setHistoryIndex(nextIndex);
       return nextHistory;
     });
-  }, []);
+  }, [buildHistorySnapshot]);
 
-  const commitElements = useCallback((next: ElementItem[], options?: { saveHistory?: boolean }) => {
-    setElements(next);
+  const commitScene = useCallback((nextElements: ElementItem[], nextTextItems: TextItem[], options?: { saveHistory?: boolean }) => {
+    setElements(nextElements);
+    setTextItems(nextTextItems);
+    elementsRef.current = nextElements;
+    textItemsRef.current = nextTextItems;
     if (options?.saveHistory === false) {
       hasPendingHistoryRef.current = true;
       return;
     }
-    saveToHistory(next);
+    saveToHistory({ elements: nextElements, textItems: nextTextItems });
     hasPendingHistoryRef.current = false;
   }, [saveToHistory]);
+
+  const commitElements = useCallback((next: ElementItem[], options?: { saveHistory?: boolean }) => {
+    commitScene(next, textItemsRef.current, options);
+  }, [commitScene]);
+
+  const commitTextItems = useCallback((next: TextItem[], options?: { saveHistory?: boolean }) => {
+    commitScene(elementsRef.current, next, options);
+  }, [commitScene]);
 
   const applyInteractiveElements = useCallback((producer: (prev: ElementItem[]) => ElementItem[]) => {
     setElements((prev) => {
       const next = producer(prev);
+      elementsRef.current = next;
+      hasPendingHistoryRef.current = true;
+      return next;
+    });
+  }, []);
+
+  const applyInteractiveTextItems = useCallback((producer: (prev: TextItem[]) => TextItem[]) => {
+    setTextItems((prev) => {
+      const next = producer(prev);
+      textItemsRef.current = next;
       hasPendingHistoryRef.current = true;
       return next;
     });
@@ -2657,7 +3564,7 @@ export default function App() {
 
   const undo = useCallback(() => {
     if (hasPendingHistoryRef.current) {
-      saveToHistory(elements);
+      saveToHistory({ elements: elementsRef.current, textItems: textItemsRef.current });
       hasPendingHistoryRef.current = false;
     }
     const currentIndex = historyIndexRef.current;
@@ -2665,14 +3572,24 @@ export default function App() {
     const nextIndex = currentIndex - 1;
     historyIndexRef.current = nextIndex;
     setHistoryIndex(nextIndex);
-    setElements(deepClone(history[nextIndex] || []));
+    const snapshot = history[nextIndex] || { elements: [], textItems: [] };
+    const nextElements = deepClone(snapshot.elements);
+    const nextTextItems = deepClone(snapshot.textItems);
+    setElements(nextElements);
+    setTextItems(nextTextItems);
+    elementsRef.current = nextElements;
+    textItemsRef.current = nextTextItems;
     setSelectedIds([]);
+    setSelectedTextId(null);
     setSelectedPointIdx(null);
     setActivePoint(null);
     setMarquee(null);
     setDraggingId(null);
     setRotatingId(null);
     setScalingId(null);
+    setDraggingTextId(null);
+    setRotatingTextId(null);
+    setScalingTextId(null);
     setRotatingGroup(false);
     setScalingGroup(false);
     setIsDrawingBrush(false);
@@ -2680,7 +3597,44 @@ export default function App() {
     dragStartPositionsRef.current = {};
     dragPointerStartRef.current = { x: 0, y: 0 };
     dragSelectedIdsRef.current = [];
-  }, [elements, history, saveToHistory]);
+  }, [history, saveToHistory]);
+
+  const redo = useCallback(() => {
+    if (hasPendingHistoryRef.current) {
+      saveToHistory({ elements: elementsRef.current, textItems: textItemsRef.current });
+      hasPendingHistoryRef.current = false;
+    }
+    const currentIndex = historyIndexRef.current;
+    if (currentIndex >= history.length - 1) return;
+    const nextIndex = currentIndex + 1;
+    historyIndexRef.current = nextIndex;
+    setHistoryIndex(nextIndex);
+    const snapshot = history[nextIndex] || { elements: [], textItems: [] };
+    const nextElements = deepClone(snapshot.elements);
+    const nextTextItems = deepClone(snapshot.textItems);
+    setElements(nextElements);
+    setTextItems(nextTextItems);
+    elementsRef.current = nextElements;
+    textItemsRef.current = nextTextItems;
+    setSelectedIds([]);
+    setSelectedTextId(null);
+    setSelectedPointIdx(null);
+    setActivePoint(null);
+    setMarquee(null);
+    setDraggingId(null);
+    setRotatingId(null);
+    setScalingId(null);
+    setDraggingTextId(null);
+    setRotatingTextId(null);
+    setScalingTextId(null);
+    setRotatingGroup(false);
+    setScalingGroup(false);
+    setIsDrawingBrush(false);
+    setBrushPoints([]);
+    dragStartPositionsRef.current = {};
+    dragPointerStartRef.current = { x: 0, y: 0 };
+    dragSelectedIdsRef.current = [];
+  }, [history, saveToHistory]);
 
   const createElementFromPath = useCallback((pathData: string, name: string, x?: number, y?: number): ElementItem => {
     let segments = parsePathToSegments(pathData);
@@ -2719,6 +3673,7 @@ export default function App() {
       y: y ?? artboardCenter.y,
       rotation: 0,
       scale: 1,
+      layerOrder: getNextSceneLayerOrder(elementsRef.current, textItemsRef.current),
       color: activeColor,
       size: Math.max(bounds.width, bounds.height) / 2 || 50,
       liquidProfile: createRandomLiquidProfile(id),
@@ -2741,6 +3696,38 @@ export default function App() {
       scale: element.scale * (targetMaxDimension / currentMaxDimension),
     };
   }, [artboard.height, artboard.width]);
+
+  const addTextElement = useCallback(() => {
+    const id = nextId();
+    const nextText: TextItem = {
+      id,
+      text: 'Bubble',
+      x: artboardCenter.x,
+      y: artboardCenter.y,
+      fontSize: Math.max(44, Math.min(88, Math.min(artboard.width, artboard.height) * 0.08)),
+      scale: 1,
+      rotation: 0,
+      layerOrder: getNextSceneLayerOrder(elementsRef.current, textItemsRef.current),
+      color: DEFAULT_TEXT_COLOR,
+      fontFamily: DEFAULT_TEXT_FONT_FAMILY,
+      fontWeight: 600,
+      morphAmount: 0,
+      roundnessAmount: 0,
+      adhesionAmount: 0,
+      grainAmount: 0,
+    };
+    commitTextItems([...textItemsRef.current, nextText]);
+    setSelectedTextId(id);
+    setSelectedIds([]);
+    setSelectedPointIdx(null);
+    setDraggingTextId(null);
+    showMsg('已添加文字，可直接拖动到气泡上方');
+  }, [artboard.height, artboard.width, artboardCenter.x, artboardCenter.y, commitTextItems, nextId, showMsg]);
+
+  const updateSelectedTextItem = useCallback((updater: (prev: TextItem) => TextItem) => {
+    if (selectedTextId === null) return;
+    commitTextItems(textItemsRef.current.map((item) => (item.id === selectedTextId ? updater(item) : item)));
+  }, [commitTextItems, selectedTextId]);
 
   const addElement = useCallback((pathData: string, name = '新元素', options?: { alignAmplitudeToArtboard?: boolean; preserveImportedShape?: boolean }) => {
     const baseElement = createElementFromPath(pathData, name);
@@ -2771,6 +3758,7 @@ export default function App() {
     const next = [...elements, newElement];
     commitElements(next);
     setSelectedIds([newElement.id]);
+    setSelectedTextId(null);
   }, [commitElements, createElementFromPath, elements, getArtboardMotionBaseline, liquidSettings.importAmplitudeMode, normalizeNewElementScale, shapeStyle, shapeStyleIntensity]);
 
   const alignElementMotionToArtboard = useCallback((baseElement: ElementItem) => {
@@ -2815,36 +3803,64 @@ export default function App() {
   }, [commitElements, elements, nextId, showMsg]);
 
   const deleteSelectedElements = useCallback(() => {
+    if (selectedTextId !== null) {
+      commitTextItems(textItemsRef.current.filter((item) => item.id !== selectedTextId));
+      setSelectedTextId(null);
+      showMsg('已删除文字');
+      return;
+    }
     if (!selectedIds.length) return;
     const next = elements.filter((el) => !selectedIdSet.has(el.id));
     commitElements(next);
     setSelectedIds([]);
     setSelectedPointIdx(null);
-  }, [commitElements, elements, selectedIdSet, selectedIds.length]);
+  }, [commitElements, commitTextItems, elements, selectedIdSet, selectedIds.length, selectedTextId, showMsg]);
 
   const moveSelectedBackward = useCallback(() => {
-    if (!selectedIds.length) return;
-    const next = elements.slice();
-    for (let index = 1; index < next.length; index += 1) {
-      if (selectedIdSet.has(next[index].id) && !selectedIdSet.has(next[index - 1].id)) {
-        [next[index - 1], next[index]] = [next[index], next[index - 1]];
+    if (!selectedIds.length && selectedTextId === null) return;
+    const selectedKeys = new Set([
+      ...selectedIds.map((id) => `element:${id}`),
+      ...(selectedTextId !== null ? [`text:${selectedTextId}`] : []),
+    ]);
+    const ordered = getOrderedSceneItems(elementsRef.current, textItemsRef.current).map((item) => ({ ...item }));
+    for (let index = 1; index < ordered.length; index += 1) {
+      const currentKey = `${ordered[index].kind}:${ordered[index].id}`;
+      const prevKey = `${ordered[index - 1].kind}:${ordered[index - 1].id}`;
+      if (selectedKeys.has(currentKey) && !selectedKeys.has(prevKey)) {
+        [ordered[index - 1].layerOrder, ordered[index].layerOrder] = [ordered[index].layerOrder, ordered[index - 1].layerOrder];
+        [ordered[index - 1], ordered[index]] = [ordered[index], ordered[index - 1]];
       }
     }
-    commitElements(next);
-    showMsg('已将所选元素下移一层');
-  }, [commitElements, elements, selectedIdSet, selectedIds.length, showMsg]);
+    const orderMap = new Map(ordered.map((item) => [`${item.kind}:${item.id}`, item.layerOrder]));
+    commitScene(
+      elementsRef.current.map((el) => ({ ...el, layerOrder: orderMap.get(`element:${el.id}`) ?? el.layerOrder })),
+      textItemsRef.current.map((item) => ({ ...item, layerOrder: orderMap.get(`text:${item.id}`) ?? item.layerOrder })),
+    );
+    showMsg(selectedTextId !== null && !selectedIds.length ? '已将所选文字下移一层' : '已将所选对象下移一层');
+  }, [commitScene, selectedIds, selectedTextId, showMsg]);
 
   const moveSelectedForward = useCallback(() => {
-    if (!selectedIds.length) return;
-    const next = elements.slice();
-    for (let index = next.length - 2; index >= 0; index -= 1) {
-      if (selectedIdSet.has(next[index].id) && !selectedIdSet.has(next[index + 1].id)) {
-        [next[index], next[index + 1]] = [next[index + 1], next[index]];
+    if (!selectedIds.length && selectedTextId === null) return;
+    const selectedKeys = new Set([
+      ...selectedIds.map((id) => `element:${id}`),
+      ...(selectedTextId !== null ? [`text:${selectedTextId}`] : []),
+    ]);
+    const ordered = getOrderedSceneItems(elementsRef.current, textItemsRef.current).map((item) => ({ ...item }));
+    for (let index = ordered.length - 2; index >= 0; index -= 1) {
+      const currentKey = `${ordered[index].kind}:${ordered[index].id}`;
+      const nextKey = `${ordered[index + 1].kind}:${ordered[index + 1].id}`;
+      if (selectedKeys.has(currentKey) && !selectedKeys.has(nextKey)) {
+        [ordered[index].layerOrder, ordered[index + 1].layerOrder] = [ordered[index + 1].layerOrder, ordered[index].layerOrder];
+        [ordered[index], ordered[index + 1]] = [ordered[index + 1], ordered[index]];
       }
     }
-    commitElements(next);
-    showMsg('已将所选元素上移一层');
-  }, [commitElements, elements, selectedIdSet, selectedIds.length, showMsg]);
+    const orderMap = new Map(ordered.map((item) => [`${item.kind}:${item.id}`, item.layerOrder]));
+    commitScene(
+      elementsRef.current.map((el) => ({ ...el, layerOrder: orderMap.get(`element:${el.id}`) ?? el.layerOrder })),
+      textItemsRef.current.map((item) => ({ ...item, layerOrder: orderMap.get(`text:${item.id}`) ?? item.layerOrder })),
+    );
+    showMsg(selectedTextId !== null && !selectedIds.length ? '已将所选文字上移一层' : '已将所选对象上移一层');
+  }, [commitScene, selectedIds, selectedTextId, showMsg]);
 
   const deleteSelectedPoint = useCallback(() => {
     if (!isEditMode || selectedPointIdx === null || !selectedSingle) return;
@@ -2954,12 +3970,15 @@ export default function App() {
       setMarquee(null);
     }
     if (currentElements && hasPendingHistoryRef.current) {
-      saveToHistory(currentElements);
+      saveToHistory({ elements: currentElements, textItems: textItemsRef.current });
       hasPendingHistoryRef.current = false;
     }
     setDraggingId(null);
     setRotatingId(null);
     setScalingId(null);
+    setDraggingTextId(null);
+    setRotatingTextId(null);
+    setScalingTextId(null);
     setRotatingGroup(false);
     setScalingGroup(false);
     setIsPanning(false);
@@ -3168,11 +4187,105 @@ export default function App() {
       ? `${separatedElementsMarkup}${overlayBlurMarkup}`
       : `<g filter="url(#clean-fusion)">${fusedElementsMarkup}</g>`;
 
+    const textClipMarkup = elements.map((el) => `
+      <clipPath id="export-text-lens-clip-${el.id}" clipPathUnits="userSpaceOnUse">
+        <g transform="translate(${el.x - artboardX}, ${el.y - artboardY}) rotate(${el.rotation}) scale(${el.scale})">
+          <path d="${escapeXml(el.path)}" />
+        </g>
+      </clipPath>
+    `).join('');
+
+    const textBaseFilterMarkup = textItems.filter((textItem) => (textItem.morphAmount ?? 0) > 0.001 || (textItem.roundnessAmount ?? 0) > 0.001 || (textItem.adhesionAmount ?? 0) > 0.001).map((textItem) => {
+      const effect = getTextEffectSettings(textItem.morphAmount ?? 0, textItem.roundnessAmount ?? 0, textItem.adhesionAmount ?? 0, sampleTime);
+      return `
+        <filter id="export-text-effect-${textItem.id}" x="-60%" y="-60%" width="220%" height="220%">
+          ${(textItem.adhesionAmount ?? 0) > 0.001
+            ? `<feGaussianBlur in="SourceGraphic" stdDeviation="${effect.adhesionBlur}" result="adhesionBlur" />
+               <feColorMatrix in="adhesionBlur" type="matrix" values="1 0 0 0 0 0 1 0 0 0 0 0 1 0 0 0 0 0 ${effect.adhesionAlphaSlope} ${effect.adhesionAlphaIntercept}" result="adhesive" />`
+            : `<feOffset in="SourceGraphic" dx="0" dy="0" result="adhesive" />`}
+          ${effect.blur > 0.001
+            ? `<feGaussianBlur in="adhesive" stdDeviation="${effect.blur}" result="softened" />`
+            : `<feOffset in="adhesive" dx="0" dy="0" result="softened" />`}
+          ${(textItem.morphAmount ?? 0) > 0.001
+            ? `<feTurbulence type="fractalNoise" baseFrequency="${effect.baseFrequencyX} ${effect.baseFrequencyY}" numOctaves="2" seed="${textItem.id % 997}" result="noise" />
+               <feDisplacementMap in="softened" in2="noise" scale="${effect.displacementScale}" xChannelSelector="R" yChannelSelector="G" />`
+            : `<feOffset in="softened" dx="0" dy="0" />`}
+        </filter>
+      `;
+    }).join('');
+
+    const textLensFilterMarkup = textItems.map((textItem) => `
+      <filter id="export-text-lens-effect-${textItem.id}" x="-80%" y="-80%" width="260%" height="260%">
+        <feTurbulence type="fractalNoise" baseFrequency="${0.003 + clamp01(textLensRange) * 0.004} ${0.006 + clamp01(textLensRange) * 0.005}" numOctaves="2" seed="${textItem.id % 983}" result="lensNoise" />
+        <feDisplacementMap in="SourceGraphic" in2="lensNoise" scale="${getTextLensDisplacement(textLensRange)}" xChannelSelector="R" yChannelSelector="G" result="refracted" />
+        <feGaussianBlur in="refracted" stdDeviation="${getTextLensBlur(textLensRange)}" />
+      </filter>
+    `).join('');
+
+    const textFilterMarkup = `${textBaseFilterMarkup}${textLensFilterMarkup}`;
+
+    const textMarkup = textItems.map((textItem) => `
+      <g>
+        <g transform="translate(${textItem.x - artboardX}, ${textItem.y - artboardY}) rotate(${textItem.rotation}) scale(${textItem.scale})" ${((textItem.morphAmount ?? 0) > 0.001 || (textItem.roundnessAmount ?? 0) > 0.001 || (textItem.adhesionAmount ?? 0) > 0.001) ? `filter="url(#export-text-effect-${textItem.id})"` : ''}>
+          <text
+            x="0"
+            y="0"
+            fill="${escapeXml(textItem.color)}"
+            font-size="${textItem.fontSize}"
+            font-family="${escapeXml(textItem.fontFamily)}"
+            font-weight="${textItem.fontWeight}"
+            stroke="${escapeXml(textItem.color)}"
+            stroke-width="${getTextStrokeWidth(textItem)}"
+            paint-order="stroke fill"
+            text-anchor="middle"
+            dominant-baseline="middle"
+          >${escapeXml(textItem.text)}</text>
+        </g>
+        ${elements.filter((el) => el.layerOrder > textItem.layerOrder).map((el) => `
+          <g clip-path="url(#export-text-lens-clip-${el.id})">
+            <g transform="translate(${el.x - artboardX}, ${el.y - artboardY}) scale(${getTextLensScale(textLensRange)}) translate(${-(el.x - artboardX)}, ${-(el.y - artboardY)})" filter="url(#export-text-lens-effect-${textItem.id})" opacity="0.98">
+              <g transform="translate(${textItem.x - artboardX}, ${textItem.y - artboardY}) rotate(${textItem.rotation}) scale(${textItem.scale})">
+                <text
+                  x="0"
+                  y="0"
+                  fill="${escapeXml(textItem.color)}"
+                  font-size="${textItem.fontSize}"
+                  font-family="${escapeXml(textItem.fontFamily)}"
+                  font-weight="${textItem.fontWeight}"
+                  stroke="${escapeXml(textItem.color)}"
+                  stroke-width="${getTextStrokeWidth(textItem)}"
+                  paint-order="stroke fill"
+                  text-anchor="middle"
+                  dominant-baseline="middle"
+                >${escapeXml(textItem.text)}</text>
+              </g>
+            </g>
+            <g transform="translate(${el.x - artboardX}, ${el.y - artboardY}) scale(${1 + clamp01(textLensRange) * 0.32}) translate(${-(el.x - artboardX)}, ${-(el.y - artboardY)})" opacity="${0.12 + clamp01(textLensRange) * 0.28}">
+              <g transform="translate(${textItem.x - artboardX + textItem.fontSize * (0.018 + clamp01(textLensRange) * 0.024)}, ${textItem.y - artboardY + textItem.fontSize * (-0.012 - clamp01(textLensRange) * 0.02)}) rotate(${textItem.rotation}) scale(${textItem.scale})">
+                <text
+                  x="0"
+                  y="0"
+                  fill="#ffffff"
+                  font-size="${textItem.fontSize}"
+                  font-family="${escapeXml(textItem.fontFamily)}"
+                  font-weight="${textItem.fontWeight}"
+                  text-anchor="middle"
+                  dominant-baseline="middle"
+                >${escapeXml(textItem.text)}</text>
+              </g>
+            </g>
+          </g>
+        `).join('')}
+      </g>
+    `).join('');
+
     return `
       <svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
         <defs>
           ${filterMarkup}
           ${overlapClipMarkup}
+          ${textClipMarkup}
+          ${textFilterMarkup}
           <filter id="clean-fusion" filterUnits="userSpaceOnUse" x="-10000" y="-10000" width="20000" height="20000" color-interpolation-filters="sRGB">
             <feTurbulence type="turbulence" baseFrequency="0.04" numOctaves="2" result="tremorNoise" />
             <feDisplacementMap in="SourceGraphic" in2="tremorNoise" scale="${glowSettings.lineJitter}" xChannelSelector="R" yChannelSelector="G" result="jitteredSource" />
@@ -3201,10 +4314,11 @@ export default function App() {
         ${transparent ? '' : `<rect x="0" y="0" width="100%" height="100%" fill="${escapeXml(artboard.backgroundColor)}" />`}
         <g ${artboard.clipContent ? `clip-path="url(#${clipId})"` : ''}>
           ${bodyMarkup}
+          ${textMarkup}
         </g>
       </svg>
     `.trim();
-  }, [artboard.backgroundColor, artboard.clipContent, artboard.height, artboard.width, artboardCenter.x, artboardCenter.y, computeLiquidFiltersAtTime, contactMode, contactSettings, elements, glowSettings.contactSuction, glowSettings.edgeThickness, glowSettings.glowDepth, glowSettings.gradientShade, glowSettings.grain, glowSettings.individualSuction, glowSettings.innerSoftness, glowSettings.intensity, glowSettings.lineJitter, liquidSettings.enabled, time]);
+  }, [artboard.backgroundColor, artboard.clipContent, artboard.height, artboard.width, artboardCenter.x, artboardCenter.y, computeLiquidFiltersAtTime, contactMode, contactSettings, elements, glowSettings.contactSuction, glowSettings.edgeThickness, glowSettings.glowDepth, glowSettings.gradientShade, glowSettings.grain, glowSettings.individualSuction, glowSettings.innerSoftness, glowSettings.intensity, glowSettings.lineJitter, liquidSettings.enabled, textItems, textLensRange, time]);
 
   const renderExportCanvas = useCallback((options?: { transparent?: boolean; sampleTime?: number; scale?: number }) => new Promise<HTMLCanvasElement>((resolve, reject) => {
     if (contactMode === 'negative') {
@@ -3235,6 +4349,22 @@ export default function App() {
           .rotateSelf(el.rotation)
           .scaleSelf(el.scale * scale),
         backgroundFill: options?.transparent ? null : artboard.backgroundColor,
+      });
+
+      drawTextLensScene({
+        ctx,
+        textItems,
+        elements,
+        lensRange: textLensRange,
+        getTextPoint: (textItem) => ({
+          x: (textItem.x - artboardRect.x) * scale,
+          y: (textItem.y - artboardRect.y) * scale,
+        }),
+        getMatrix: (el) => new DOMMatrix()
+          .translateSelf((el.x - artboardRect.x) * scale, (el.y - artboardRect.y) * scale)
+          .rotateSelf(el.rotation)
+          .scaleSelf(el.scale * scale),
+        getVisibleElementsForText: (textItem) => elements.filter((el) => el.layerOrder > textItem.layerOrder),
       });
 
       resolve(canvas);
@@ -3273,7 +4403,7 @@ export default function App() {
       reject(new Error('导出画面渲染失败'));
     };
     img.src = url;
-  }), [artboard.backgroundColor, artboard.height, artboard.width, artboardRect.x, artboardRect.y, buildExportSvgString, contactMode, contactSettings, elements, liquidSettings, time]);
+  }), [artboard.backgroundColor, artboard.height, artboard.width, artboardRect.x, artboardRect.y, buildExportSvgString, contactMode, contactSettings, elements, liquidSettings, textItems, textLensRange, time]);
 
   const downloadPNG = useCallback(async () => {
     try {
@@ -3500,8 +4630,10 @@ export default function App() {
       const el = elementsById.get(extra.elId);
       if (!el) return;
       const targetSeg = el.segments[extra.segIndex];
-      const nextSeg = el.segments[extra.segIndex + 1];
       if (!targetSeg || targetSeg.type === 'Z') return;
+      const handles = getAnchorHandles(el.segments, extra.segIndex);
+      const incomingCurve = handles.incomingCurveIndex === null ? null : el.segments[handles.incomingCurveIndex];
+      const outgoingCurve = handles.outgoingCurveIndex === null ? null : el.segments[handles.outgoingCurveIndex];
       setActivePoint({
         elId: extra.elId,
         segIndex: extra.segIndex,
@@ -3515,12 +4647,12 @@ export default function App() {
         origPointY: targetSeg.y,
         origX1: 'x1' in targetSeg ? targetSeg.x1 : undefined,
         origY1: 'y1' in targetSeg ? targetSeg.y1 : undefined,
-        origX2: 'x2' in targetSeg ? targetSeg.x2 : undefined,
-        origY2: 'y2' in targetSeg ? targetSeg.y2 : undefined,
+        origX2: incomingCurve && incomingCurve.type === 'C' ? incomingCurve.x2 : undefined,
+        origY2: incomingCurve && incomingCurve.type === 'C' ? incomingCurve.y2 : undefined,
         origOutX: 'outX' in targetSeg ? targetSeg.outX : undefined,
         origOutY: 'outY' in targetSeg ? targetSeg.outY : undefined,
-        origNextX1: nextSeg && nextSeg.type === 'C' ? nextSeg.x1 : undefined,
-        origNextY1: nextSeg && nextSeg.type === 'C' ? nextSeg.y1 : undefined,
+        origNextX1: outgoingCurve && outgoingCurve.type === 'C' ? outgoingCurve.x1 : undefined,
+        origNextY1: outgoingCurve && outgoingCurve.type === 'C' ? outgoingCurve.y1 : undefined,
       });
       if (extra.prop === 'main') setSelectedPointIdx(extra.segIndex);
       return;
@@ -3529,6 +4661,7 @@ export default function App() {
     if (id === null && mode !== 'groupScale' && mode !== 'groupRotate') {
       if (!isPointInsideArtboard(point)) return;
       setSelectedIds([]);
+      setSelectedTextId(null);
       setSelectedPointIdx(null);
       if (!isEditMode) setMarquee({ startX: point.x, startY: point.y, currentX: point.x, currentY: point.y });
       return;
@@ -3557,6 +4690,7 @@ export default function App() {
     const nextSelectedIds = selectedIdSet.has(id) ? selectedIds : [id];
     if (!selectedIdSet.has(id)) {
       setSelectedIds([id]);
+      setSelectedTextId(null);
       setActiveColor(el.color);
     }
 
@@ -3586,6 +4720,39 @@ export default function App() {
       }
     }
   }, [elements, elementsById, isBrushMode, isEditMode, isPointInsideArtboard, selectedElements, selectedIds, selectedIdSet, viewOffset, zoom]);
+
+  const handleTextPointerDown = useCallback((e: React.PointerEvent, id: number, mode: 'drag' | 'rotate' | 'scale' = 'drag') => {
+    if (!canvasRef.current) return;
+    if (e.button === 2) return;
+    e.stopPropagation();
+    (e.target as Element).setPointerCapture?.(e.pointerId);
+    const rect = canvasRef.current.getBoundingClientRect();
+    const point = getClientCanvasPoint(e, rect, viewOffset, zoom);
+    const target = textItems.find((item) => item.id === id);
+    if (!target) return;
+    setSelectedTextId(id);
+    setSelectedIds([]);
+    setSelectedPointIdx(null);
+    if (mode === 'drag') {
+      setDraggingTextId(id);
+      setRotatingTextId(null);
+      setScalingTextId(null);
+      textDragOffsetRef.current = { x: point.x - target.x, y: point.y - target.y };
+      return;
+    }
+    if (mode === 'rotate') {
+      setDraggingTextId(null);
+      setRotatingTextId(id);
+      setScalingTextId(null);
+      setTextRotationSnap({ initialRotation: target.rotation, startAngle: Math.atan2(point.y - target.y, point.x - target.x) });
+      return;
+    }
+    setDraggingTextId(null);
+    setRotatingTextId(null);
+    setScalingTextId(id);
+    setTextInitialScale(target.scale);
+    setTextInitialDist(Math.max(0.0001, Math.hypot(point.x - target.x, point.y - target.y)));
+  }, [textItems, viewOffset, zoom]);
 
   const handlePointerMove = useCallback((e: React.PointerEvent) => {
     if (!canvasRef.current) return;
@@ -3643,25 +4810,50 @@ export default function App() {
         const current = nextSegs[segIndex];
         if (!current || current.type === 'Z') return el;
         const seg = { ...current } as CurveSeg | MoveSeg;
-        const nextSeg = nextSegs[segIndex + 1];
+        const incomingCurveIndex = getIncomingCurveIndex(nextSegs, segIndex);
+        const outgoingCurveIndex = getOutgoingCurveIndex(nextSegs, segIndex);
 
         if (prop === 'main') {
           seg.x = (origPointX ?? seg.x) + localDx;
           seg.y = (origPointY ?? seg.y) + localDy;
-          if ('x1' in seg) { seg.x1 = (origX1 ?? seg.x1) + localDx; seg.y1 = (origY1 ?? seg.y1) + localDy; }
-          if ('x2' in seg) { seg.x2 = (origX2 ?? seg.x2) + localDx; seg.y2 = (origY2 ?? seg.y2) + localDy; }
-          if (nextSeg && nextSeg.type === 'C' && origNextX1 !== undefined && origNextY1 !== undefined) {
-            nextSegs[segIndex + 1] = { ...nextSeg, x1: origNextX1 + localDx, y1: origNextY1 + localDy };
+          if (incomingCurveIndex !== null) {
+            const incomingCurve = nextSegs[incomingCurveIndex];
+            if (incomingCurve && incomingCurve.type === 'C' && origX2 !== undefined && origY2 !== undefined) {
+              nextSegs[incomingCurveIndex] = {
+                ...incomingCurve,
+                x2: origX2 + localDx,
+                y2: origY2 + localDy,
+              };
+            }
           }
-        } else if (prop === 'in' && 'x2' in seg) {
-          seg.x2 = (origX2 ?? seg.x2) + localDx;
-          seg.y2 = (origY2 ?? seg.y2) + localDy;
-        } else if (prop === 'out' && nextSeg && nextSeg.type === 'C') {
-          nextSegs[segIndex + 1] = {
-            ...nextSeg,
-            x1: (origNextX1 ?? nextSeg.x1) + localDx,
-            y1: (origNextY1 ?? nextSeg.y1) + localDy,
-          };
+          if (outgoingCurveIndex !== null) {
+            const outgoingCurve = nextSegs[outgoingCurveIndex];
+            if (outgoingCurve && outgoingCurve.type === 'C' && origNextX1 !== undefined && origNextY1 !== undefined) {
+              nextSegs[outgoingCurveIndex] = {
+                ...outgoingCurve,
+                x1: origNextX1 + localDx,
+                y1: origNextY1 + localDy,
+              };
+            }
+          }
+        } else if (prop === 'in' && incomingCurveIndex !== null) {
+          const incomingCurve = nextSegs[incomingCurveIndex];
+          if (incomingCurve && incomingCurve.type === 'C') {
+            nextSegs[incomingCurveIndex] = {
+              ...incomingCurve,
+              x2: (origX2 ?? incomingCurve.x2) + localDx,
+              y2: (origY2 ?? incomingCurve.y2) + localDy,
+            };
+          }
+        } else if (prop === 'out' && outgoingCurveIndex !== null) {
+          const outgoingCurve = nextSegs[outgoingCurveIndex];
+          if (outgoingCurve && outgoingCurve.type === 'C') {
+            nextSegs[outgoingCurveIndex] = {
+              ...outgoingCurve,
+              x1: (origNextX1 ?? outgoingCurve.x1) + localDx,
+              y1: (origNextY1 ?? outgoingCurve.y1) + localDy,
+            };
+          }
         }
 
         nextSegs[segIndex] = seg as Segment;
@@ -3715,6 +4907,40 @@ export default function App() {
       return;
     }
 
+    if (draggingTextId !== null) {
+      applyInteractiveTextItems((prev) => prev.map((item) => (
+        item.id === draggingTextId
+          ? { ...item, x: point.x - textDragOffsetRef.current.x, y: point.y - textDragOffsetRef.current.y }
+          : item
+      )));
+      return;
+    }
+
+    if (rotatingTextId !== null) {
+      const target = textItemsRef.current.find((item) => item.id === rotatingTextId);
+      if (!target) return;
+      const currentAngle = Math.atan2(point.y - target.y, point.x - target.x);
+      const deltaAngle = (currentAngle - textRotationSnap.startAngle) * (180 / Math.PI);
+      applyInteractiveTextItems((prev) => prev.map((item) => (
+        item.id === rotatingTextId
+          ? { ...item, rotation: textRotationSnap.initialRotation + deltaAngle }
+          : item
+      )));
+      return;
+    }
+
+    if (scalingTextId !== null) {
+      const target = textItemsRef.current.find((item) => item.id === scalingTextId);
+      if (!target) return;
+      const ratio = Math.max(0.25, Math.hypot(point.x - target.x, point.y - target.y) / textInitialDist);
+      applyInteractiveTextItems((prev) => prev.map((item) => (
+        item.id === scalingTextId
+          ? { ...item, scale: textInitialScale * ratio }
+          : item
+      )));
+      return;
+    }
+
     if (rotatingId !== null) {
       const el = elementsById.get(rotatingId);
       if (!el) return;
@@ -3737,7 +4963,7 @@ export default function App() {
       }
       applyInteractiveElements((prev) => prev.map((item) => item.id === scalingId ? { ...item, scale: initialScale * ratio } : item));
     }
-  }, [activePoint, applyInteractiveElements, elementsById, draggingId, groupCenter.x, groupCenter.y, initialDist, initialScale, initialStates, isBrushMode, isDrawingBrush, isPanning, isPointInsideArtboard, marquee, panStart.x, panStart.y, rotatingGroup, rotatingId, rotationSnap.initialRotation, rotationSnap.startAngle, scalingGroup, scalingId, viewOffset, zoom]);
+  }, [activePoint, applyInteractiveElements, applyInteractiveTextItems, draggingId, draggingTextId, elementsById, groupCenter.x, groupCenter.y, initialDist, initialScale, initialStates, isBrushMode, isDrawingBrush, isPanning, isPointInsideArtboard, marquee, panStart.x, panStart.y, rotatingGroup, rotatingId, rotatingTextId, rotationSnap.initialRotation, rotationSnap.startAngle, scalingGroup, scalingId, scalingTextId, textInitialDist, textInitialScale, textRotationSnap.initialRotation, textRotationSnap.startAngle, viewOffset, zoom]);
 
   const liquidFilters = useMemo(() => computeLiquidFiltersAtTime(time), [computeLiquidFiltersAtTime, time]);
 
@@ -3778,11 +5004,13 @@ export default function App() {
           fillCanvas={fillCanvas}
           fileInputRef={fileInputRef}
           handleFileUpload={handleFileUpload}
+          addTextElement={addTextElement}
         />
 
         <main className="flex-1 flex flex-col relative overflow-hidden bg-white/70 backdrop-blur-2xl border border-white/60 rounded-[32px] shadow-[0_24px_60px_rgba(15,23,42,0.08)]">
         <Toolbar
           historyIndex={historyIndex}
+          historyLength={history.length}
           isBrushMode={isBrushMode}
           setIsBrushMode={setIsBrushMode}
           isEditMode={isEditMode}
@@ -3790,6 +5018,7 @@ export default function App() {
           setBrushPoints={setBrushPoints}
           setIsDrawingBrush={setIsDrawingBrush}
           selectedIds={selectedIds}
+          hasTextSelection={selectedTextId !== null}
           moveSelectedBackward={moveSelectedBackward}
           moveSelectedForward={moveSelectedForward}
           deleteSelectedElements={deleteSelectedElements}
@@ -3807,6 +5036,7 @@ export default function App() {
           gifOutputWidth={gifOutputWidth}
           gifOutputHeight={gifOutputHeight}
           undo={undo}
+          redo={redo}
           setSelectedIds={setSelectedIds}
         />
 
@@ -3833,6 +5063,8 @@ export default function App() {
           artboard={artboard}
           artboardRect={artboardRect}
           elements={elements}
+          textItems={textItems}
+          selectedTextId={selectedTextId}
           selectedIdSet={selectedIdSet}
           liquidSettings={liquidSettings}
           brushPoints={brushPoints}
@@ -3843,6 +5075,8 @@ export default function App() {
           selectedPointIdx={selectedPointIdx}
           groupBounds={groupBounds}
           fitViewToArtboard={fitViewToArtboard}
+          textLensRange={textLensRange}
+          handleTextPointerDown={handleTextPointerDown}
         />
         </main>
 
@@ -3878,6 +5112,13 @@ export default function App() {
           fillCanvas={fillCanvas}
           fileInputRef={fileInputRef}
           handleFileUpload={handleFileUpload}
+          addTextElement={addTextElement}
+          textItems={textItems}
+          selectedTextItem={selectedTextItem}
+          updateSelectedTextItem={updateSelectedTextItem}
+          selectedSingle={selectedSingle}
+          textLensRange={textLensRange}
+          setTextLensRange={setTextLensRange}
         />
       </div>
     </div>
