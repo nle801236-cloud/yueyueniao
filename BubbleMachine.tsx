@@ -936,6 +936,35 @@ const drawTextDiffusionParticles = (
   ctx.restore();
 };
 
+const createTextGrainBitmap = (
+  bitmap: { canvas: HTMLCanvasElement; width: number; height: number },
+  color: string,
+  amount: number,
+) => {
+  const intensity = clamp01(amount);
+  if (intensity <= 0.001 || typeof document === 'undefined') return null;
+  const noiseCanvas = getNegativeNoiseCanvas();
+  if (!noiseCanvas) return null;
+
+  const canvas = document.createElement('canvas');
+  canvas.width = bitmap.width;
+  canvas.height = bitmap.height;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return null;
+
+  ctx.clearRect(0, 0, bitmap.width, bitmap.height);
+  ctx.fillStyle = color;
+  ctx.fillRect(0, 0, bitmap.width, bitmap.height);
+  ctx.globalCompositeOperation = 'destination-in';
+  ctx.drawImage(bitmap.canvas, 0, 0);
+  ctx.globalCompositeOperation = 'multiply';
+  ctx.globalAlpha = 0.16 + intensity * 0.44;
+  ctx.drawImage(noiseCanvas, 0, 0, bitmap.width, bitmap.height);
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.globalAlpha = 1;
+  return canvas;
+};
+
 type SceneOrderItem =
   | { kind: 'element'; id: number; layerOrder: number }
   | { kind: 'text'; id: number; layerOrder: number };
@@ -1160,8 +1189,8 @@ const drawTextLensScene = ({
   const lensScale = getTextLensScale(lensStrength);
   const lensBlur = getTextLensBlur(lensStrength);
   const lensDisplacement = getTextLensDisplacement(lensStrength);
-  const lensAlpha = 0.96 + lensStrength * 0.04;
-  const refractionAlpha = 0.08 + lensStrength * 0.16;
+  const lensAlpha = 0.9 + lensStrength * 0.06;
+  const refractionAlpha = 0.06 + lensStrength * 0.12;
 
   textItems.forEach((textItem) => {
     const point = getTextPoint(textItem);
@@ -1174,58 +1203,83 @@ const drawTextLensScene = ({
       const blurAmount = clamp01(textItem.roundnessAmount ?? 0);
       const adhesionAmount = clamp01(textItem.adhesionAmount ?? 0);
       const grainAmount = clamp01(textItem.grainAmount ?? 0);
-      const refractionShiftX = lensDisplacement * 0.12;
-      const refractionShiftY = -lensDisplacement * 0.04;
-      const morphScaleX = 1 + morphAmount * 0.16;
-      const morphScaleY = 1 - morphAmount * 0.05;
-      const adhesionScale = 1 + adhesionAmount * 0.08;
-      const contentBlur = lensBlur * 0.7 + blurAmount * 4.8 + adhesionAmount * 1.8;
+      const refractionShiftX = lensDisplacement * 0.09;
+      const refractionShiftY = -lensDisplacement * 0.03;
+      const contentBlur = lensBlur * 0.55 + blurAmount * 6.2 + adhesionAmount * 2.4;
       const textBitmap = createTextEffectBitmap(textItem, {
         blur: contentBlur,
         adhesion: adhesionAmount,
-        grain: grainAmount,
       });
       if (!textBitmap) return;
+      const grainBitmap = createTextGrainBitmap(textBitmap, textItem.color, grainAmount);
 
       ctx.save();
       ctx.clip(clipPath);
 
-      const renderWarpedBitmap = (alpha: number, offsetX = 0, offsetY = 0, extraBlur = 0) => {
-        const stripCount = Math.max(18, Math.round(26 + morphAmount * 36));
-        const stripHeight = textBitmap.height / stripCount;
+      const renderWarpedBitmap = (
+        sourceCanvas: HTMLCanvasElement,
+        alpha: number,
+        offsetX = 0,
+        offsetY = 0,
+        extraBlur = 0,
+      ) => {
+        const columnCount = Math.max(48, Math.round(60 + morphAmount * 70));
+        const columnWidth = textBitmap.width / columnCount;
+        const phaseA = textItem.id * 0.097;
+        const phaseB = textItem.id * 0.143;
+        const phaseC = textItem.id * 0.211;
         ctx.save();
         ctx.globalAlpha = alpha;
         ctx.filter = extraBlur > 0.001 ? `blur(${extraBlur}px)` : 'none';
+        ctx.imageSmoothingEnabled = true;
         ctx.translate(lensCenter.x, lensCenter.y);
         ctx.rotate(textItem.rotation * (Math.PI / 180));
-        ctx.scale(textItem.scale * lensScale * morphScaleX * adhesionScale, textItem.scale * lensScale * morphScaleY * adhesionScale);
+        ctx.scale(textItem.scale * lensScale, textItem.scale * lensScale);
         ctx.translate(offsetX, offsetY);
-        for (let stripIndex = 0; stripIndex < stripCount; stripIndex += 1) {
-          const sy = stripIndex * stripHeight;
-          const t = stripIndex / Math.max(1, stripCount - 1);
-          const wave = Math.sin(t * Math.PI * 2 + textItem.id * 0.21) * morphAmount * textItem.fontSize * 0.22;
-          const counterWave = Math.cos(t * Math.PI * 3 + textItem.id * 0.11) * morphAmount * textItem.fontSize * 0.05;
-          const bandScaleX = 1 + Math.sin(t * Math.PI + textItem.id * 0.19) * morphAmount * 0.08;
-          const bandHeight = Math.max(1, stripHeight + 1);
-          const dx = -textBitmap.width / 2 + wave + refractionShiftX * 0.2 + counterWave;
-          const dy = -textBitmap.height / 2 + sy + refractionShiftY * 0.16;
+        for (let columnIndex = 0; columnIndex < columnCount; columnIndex += 1) {
+          const sx = columnIndex * columnWidth;
+          const t = columnIndex / Math.max(1, columnCount - 1);
+          const centered = t - 0.5;
+          const centerFalloff = 1 - Math.min(1, Math.abs(centered) * 1.85);
+          const bulgeScaleY = 1 + lensStrength * 0.24 * centerFalloff + morphAmount * 0.08;
+          const waveY =
+            Math.sin(centered * 5.6 + phaseA) * morphAmount * textItem.fontSize * 0.18 +
+            Math.sin(centered * 12.4 + phaseB) * morphAmount * textItem.fontSize * 0.07 +
+            centerFalloff * lensStrength * textItem.fontSize * 0.04;
+          const waveX =
+            Math.sin(centered * 7.2 + phaseB) * morphAmount * textItem.fontSize * 0.05 +
+            Math.cos(centered * 3.8 + phaseC) * lensStrength * textItem.fontSize * 0.018;
+          const columnScaleX = 1 + Math.sin(centered * 4.4 + phaseC) * morphAmount * 0.045;
+          const sampleWidth = Math.max(1, columnWidth + 1.2);
+          const dx = -textBitmap.width / 2 + sx + waveX;
+          const dy = -textBitmap.height / 2 - (textBitmap.height * (bulgeScaleY - 1)) * 0.5 + waveY;
           ctx.drawImage(
-            textBitmap.canvas,
+            sourceCanvas,
+            sx,
             0,
-            sy,
-            textBitmap.width,
-            bandHeight,
+            sampleWidth,
+            textBitmap.height,
             dx,
             dy,
-            textBitmap.width * bandScaleX,
-            bandHeight,
+            sampleWidth * columnScaleX,
+            textBitmap.height * bulgeScaleY,
           );
         }
         ctx.restore();
       };
 
-      renderWarpedBitmap(lensAlpha, 0, 0, 0);
-      renderWarpedBitmap(refractionAlpha, refractionShiftX, refractionShiftY, Math.max(0.2, contentBlur * 0.18));
+      renderWarpedBitmap(textBitmap.canvas, lensAlpha * (1 - grainAmount * 0.08), 0, 0, Math.max(0.05, blurAmount * 1.15));
+      renderWarpedBitmap(
+        textBitmap.canvas,
+        refractionAlpha,
+        refractionShiftX,
+        refractionShiftY,
+        Math.max(0.16, contentBlur * 0.12),
+      );
+      if (grainBitmap) {
+        renderWarpedBitmap(grainBitmap, 0.16 + grainAmount * 0.36, 0, 0, Math.max(0.08, blurAmount * 0.25));
+      }
+      drawTextDiffusionParticles(ctx, textBitmap, textItem, grainAmount * 0.65);
       ctx.restore();
     });
   });
@@ -2728,6 +2782,16 @@ const Stage = memo(function Stage({
     );
   }, [contactMode, contactSettings, glowSettings.edgeThickness]);
 
+  const renderBubbleSurfaceOverlay = useCallback((el: ElementItem, keyPrefix = 'bubble-surface') => {
+    const overlayPath = contactMode === 'negative' ? getContactRenderPath(el, contactMode, contactSettings) : el.path;
+    const opacity = 0.08 + glowSettings.gradientShade / 100 * 0.12;
+    return (
+      <g key={`${keyPrefix}-${el.id}`} transform={`translate(${el.x}, ${el.y}) rotate(${el.rotation}) scale(${el.scale})`} pointerEvents="none">
+        <path d={overlayPath} fill={artboard.backgroundColor} opacity={opacity} />
+      </g>
+    );
+  }, [artboard.backgroundColor, contactMode, contactSettings, glowSettings.gradientShade]);
+
   useEffect(() => {
     if (contactMode !== 'negative') {
       setNegativeSceneHref(null);
@@ -3014,6 +3078,9 @@ const Stage = memo(function Stage({
                 />
               )}
               <g data-ui="true" pointerEvents="none">
+                {elementsInLayerOrder.map((el) => renderBubbleSurfaceOverlay(el, 'negative-surface'))}
+              </g>
+              <g data-ui="true" pointerEvents="none">
                 {elementsInLayerOrder.map((el) => renderBubbleEdgeOverlay(el, 'negative-edge'))}
               </g>
               {textItemsAboveBubbles.map((textItem) => renderTextSceneItem(textItem, 'negative-front-text', { applyEffects: false }))}
@@ -3063,6 +3130,9 @@ const Stage = memo(function Stage({
                 />
               )}
               <g data-ui="true" pointerEvents="none">
+                {elementsInLayerOrder.map((el) => renderBubbleSurfaceOverlay(el, 'overlay-surface'))}
+              </g>
+              <g data-ui="true" pointerEvents="none">
                 {elementsInLayerOrder.map((el) => renderBubbleEdgeOverlay(el, 'overlay-edge'))}
               </g>
               {textItemsAboveBubbles.map((textItem) => renderTextSceneItem(textItem, 'front-text', { applyEffects: false }))}
@@ -3101,6 +3171,9 @@ const Stage = memo(function Stage({
                     pointerEvents="none"
                   />
                 )}
+              </g>
+              <g data-ui="true" pointerEvents="none" clipPath={artboard.clipContent ? 'url(#workspace-artboard-clip)' : undefined}>
+                {elementsInLayerOrder.map((el) => renderBubbleSurfaceOverlay(el, 'fusion-surface'))}
               </g>
               <g data-ui="true" pointerEvents="none" clipPath={artboard.clipContent ? 'url(#workspace-artboard-clip)' : undefined}>
                 {elementsInLayerOrder.map((el) => renderBubbleEdgeOverlay(el, 'fusion-edge'))}
@@ -3354,6 +3427,7 @@ export default function App() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const messageTimerRef = useRef<number | null>(null);
   const idRef = useRef(1);
+  const didInitialFitRef = useRef(false);
   const historyIndexRef = useRef(0);
   const elementsRef = useRef<ElementItem[]>([]);
   const textItemsRef = useRef<TextItem[]>([]);
@@ -3500,6 +3574,8 @@ export default function App() {
   }, [textItems]);
 
   useEffect(() => {
+    if (didInitialFitRef.current) return;
+    didInitialFitRef.current = true;
     fitViewToArtboard();
   }, [fitViewToArtboard]);
 
