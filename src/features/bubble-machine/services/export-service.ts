@@ -39,6 +39,55 @@ const triggerDownload = (blob: Blob, filename: string) => {
   window.setTimeout(() => URL.revokeObjectURL(link.href), 0);
 };
 
+const renderStageSnapshotCanvas = ({
+  stageSvg,
+  stageViewBox,
+  width,
+  height,
+  scale,
+}: {
+  stageSvg: SVGSVGElement;
+  stageViewBox: { x: number; y: number; width: number; height: number };
+  width: number;
+  height: number;
+  scale: number;
+}) => new Promise<HTMLCanvasElement>((resolve, reject) => {
+  const clone = stageSvg.cloneNode(true) as SVGSVGElement;
+  clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+  clone.setAttribute('xmlns:xlink', 'http://www.w3.org/1999/xlink');
+  clone.setAttribute('width', String(Math.max(1, Math.round(width * scale))));
+  clone.setAttribute('height', String(Math.max(1, Math.round(height * scale))));
+  clone.setAttribute('viewBox', `${stageViewBox.x} ${stageViewBox.y} ${stageViewBox.width} ${stageViewBox.height}`);
+  clone.style.width = `${Math.max(1, Math.round(width * scale))}px`;
+  clone.style.height = `${Math.max(1, Math.round(height * scale))}px`;
+
+  const serializer = new XMLSerializer();
+  const svgData = serializer.serializeToString(clone);
+  const url = URL.createObjectURL(new Blob([svgData], { type: 'image/svg+xml;charset=utf-8' }));
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.max(1, Math.round(width * scale));
+  canvas.height = Math.max(1, Math.round(height * scale));
+  const ctx = canvas.getContext('2d');
+  if (!ctx) {
+    URL.revokeObjectURL(url);
+    reject(new Error('无法创建画布上下文'));
+    return;
+  }
+
+  const img = new Image();
+  img.onload = () => {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+    URL.revokeObjectURL(url);
+    resolve(canvas);
+  };
+  img.onerror = () => {
+    URL.revokeObjectURL(url);
+    reject(new Error('实时画板快照渲染失败'));
+  };
+  img.src = url;
+});
+
 type SharedExportOptions = {
   artboard: ArtboardSettings;
   artboardCenter: { x: number; y: number };
@@ -68,9 +117,11 @@ export const buildExportSvgString = ({
   computeLiquidFiltersAtTime,
   transparent = false,
   sampleTime = time,
+  includeText = true,
 }: SharedExportOptions & {
   transparent?: boolean;
   sampleTime?: number;
+  includeText?: boolean;
 }) => {
   const frameFilters = computeLiquidFiltersAtTime(sampleTime);
   const width = Math.max(1, Math.round(artboard.width));
@@ -259,7 +310,7 @@ export const buildExportSvgString = ({
       ${transparent ? '' : `<rect x="0" y="0" width="100%" height="100%" fill="${escapeXml(artboard.backgroundColor)}" />`}
       <g ${artboard.clipContent ? `clip-path="url(#${clipId})"` : ''}>
         ${bodyMarkup}
-        ${textMarkup}
+        ${includeText ? textMarkup : ''}
       </g>
     </svg>
   `.trim();
@@ -279,16 +330,34 @@ export const renderExportCanvas = ({
   transparent = false,
   sampleTime = time,
   scale = 1,
+  useStageSnapshot = false,
+  stageSvg,
+  stageViewBox,
 }: Pick<SharedExportOptions, 'artboard' | 'artboardRect' | 'elements' | 'textItems' | 'liquidSettings' | 'contactMode' | 'contactSettings' | 'textLensRange' | 'time'> & {
-  buildSvg: (options?: { transparent?: boolean; sampleTime?: number }) => string;
+  buildSvg: (options?: { transparent?: boolean; sampleTime?: number; includeText?: boolean }) => string;
   transparent?: boolean;
   sampleTime?: number;
   scale?: number;
+  useStageSnapshot?: boolean;
+  stageSvg?: SVGSVGElement | null;
+  stageViewBox?: { x: number; y: number; width: number; height: number };
 }) => new Promise<HTMLCanvasElement>((resolve, reject) => {
+  const width = Math.max(1, Math.round(artboard.width));
+  const height = Math.max(1, Math.round(artboard.height));
+  const exportScale = Math.max(1, scale);
+
+  if (useStageSnapshot && stageSvg && stageViewBox) {
+    renderStageSnapshotCanvas({
+      stageSvg,
+      stageViewBox,
+      width,
+      height,
+      scale: exportScale,
+    }).then(resolve).catch(reject);
+    return;
+  }
+
   if (contactMode === 'negative') {
-    const width = Math.max(1, Math.round(artboard.width));
-    const height = Math.max(1, Math.round(artboard.height));
-    const exportScale = Math.max(1, scale);
     const canvas = document.createElement('canvas');
     canvas.width = Math.max(1, Math.floor(width * exportScale));
     canvas.height = Math.max(1, Math.floor(height * exportScale));
@@ -335,10 +404,7 @@ export const renderExportCanvas = ({
     return;
   }
 
-  const svgData = buildSvg({ transparent, sampleTime });
-  const width = Math.max(1, Math.round(artboard.width));
-  const height = Math.max(1, Math.round(artboard.height));
-  const exportScale = Math.max(1, scale);
+  const svgData = buildSvg({ transparent, sampleTime, includeText: false });
   const canvas = document.createElement('canvas');
   canvas.width = Math.max(1, Math.floor(width * exportScale));
   canvas.height = Math.max(1, Math.floor(height * exportScale));
@@ -353,6 +419,60 @@ export const renderExportCanvas = ({
   const url = URL.createObjectURL(new Blob([svgData], { type: 'image/svg+xml;charset=utf-8' }));
   img.onload = () => {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    const visibleTextItems = textItems.filter((textItem) => elements.some((el) => el.layerOrder > textItem.layerOrder));
+    visibleTextItems.forEach((textItem) => {
+      ctx.save();
+      ctx.font = `${textItem.fontWeight} ${textItem.fontSize}px ${textItem.fontFamily}`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillStyle = textItem.color;
+      ctx.strokeStyle = textItem.color;
+      ctx.lineWidth = getTextStrokeWidth(textItem) * exportScale;
+      ctx.translate((textItem.x - artboardRect.x) * exportScale, (textItem.y - artboardRect.y) * exportScale);
+      ctx.rotate(textItem.rotation * (Math.PI / 180));
+      ctx.scale(textItem.scale * exportScale, textItem.scale * exportScale);
+      ctx.strokeText(textItem.text, 0, 0);
+      ctx.fillText(textItem.text, 0, 0);
+      ctx.restore();
+
+      const visibleElements = elements.filter((el) => el.layerOrder > textItem.layerOrder);
+      if (!visibleElements.length) return;
+
+      ctx.save();
+      ctx.globalCompositeOperation = 'destination-out';
+      visibleElements.forEach((el) => {
+        const transformedPath = new Path2D();
+        transformedPath.addPath(
+          new Path2D(el.path),
+          new DOMMatrix()
+            .translateSelf((el.x - artboardRect.x) * exportScale, (el.y - artboardRect.y) * exportScale)
+            .rotateSelf(el.rotation)
+            .scaleSelf(el.scale * exportScale),
+        );
+        ctx.fill(transformedPath);
+      });
+      ctx.restore();
+    });
+
+    drawTextLensScene({
+      ctx,
+      textItems: visibleTextItems,
+      elements,
+      lensRange: textLensRange,
+      getTextPoint: (textItem) => ({
+        x: (textItem.x - artboardRect.x) * exportScale,
+        y: (textItem.y - artboardRect.y) * exportScale,
+      }),
+      getTextScale: (textItem) => textItem.scale * exportScale,
+      getMatrix: (el) => new DOMMatrix()
+        .translateSelf((el.x - artboardRect.x) * exportScale, (el.y - artboardRect.y) * exportScale)
+        .rotateSelf(el.rotation)
+        .scaleSelf(el.scale * exportScale),
+      getVisibleElementsForText: (textItem) => elements.filter((el) => el.layerOrder > textItem.layerOrder),
+      clipToVisibleElements: true,
+    });
+
     ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
     URL.revokeObjectURL(url);
     resolve(canvas);

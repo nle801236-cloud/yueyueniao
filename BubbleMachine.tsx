@@ -161,6 +161,7 @@ export default function App() {
   });
 
   const canvasRef = useRef<HTMLDivElement>(null);
+  const stageSvgRef = useRef<SVGSVGElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const messageTimerRef = useRef<number | null>(null);
   const idRef = useRef(1);
@@ -708,7 +709,7 @@ export default function App() {
     sampleTime: options?.sampleTime,
   }), [artboard, artboardCenter, elements, textItems, liquidSettings, contactMode, contactSettings, glowSettings, textLensRange, time, computeLiquidFiltersAtTime]);
 
-  const renderCurrentExportCanvas = useCallback((options?: { transparent?: boolean; sampleTime?: number; scale?: number }) => renderExportCanvas({
+  const renderCurrentExportCanvas = useCallback((options?: { transparent?: boolean; sampleTime?: number; scale?: number; useStageSnapshot?: boolean }) => renderExportCanvas({
     artboard,
     artboardRect,
     elements,
@@ -722,12 +723,20 @@ export default function App() {
     transparent: options?.transparent,
     sampleTime: options?.sampleTime,
     scale: options?.scale,
-  }), [artboard, artboardRect, elements, textItems, liquidSettings, contactMode, contactSettings, textLensRange, time, buildExportSvg]);
+    useStageSnapshot: options?.useStageSnapshot,
+    stageSvg: stageSvgRef.current,
+    stageViewBox: {
+      x: viewOffset.x + artboardRect.x * zoom,
+      y: viewOffset.y + artboardRect.y * zoom,
+      width: artboardRect.width * zoom,
+      height: artboardRect.height * zoom,
+    },
+  }), [artboard, artboardRect, elements, textItems, liquidSettings, contactMode, contactSettings, textLensRange, time, buildExportSvg, viewOffset.x, viewOffset.y, zoom]);
 
   const downloadPNG = useCallback(async () => {
     try {
       await downloadPngFile({
-        renderCanvas: renderCurrentExportCanvas,
+        renderCanvas: (options) => renderCurrentExportCanvas({ ...options, useStageSnapshot: true }),
         scale: pngExportScale,
         width: pngOutputWidth,
         height: pngOutputHeight,
@@ -1227,6 +1236,7 @@ export default function App() {
 
         <Stage
           canvasRef={canvasRef}
+          svgRef={stageSvgRef}
           isDraggingOver={isDraggingOver}
           setIsDraggingOver={setIsDraggingOver}
           onDrop={onDrop}

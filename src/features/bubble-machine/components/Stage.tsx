@@ -26,6 +26,7 @@ type TextSceneLayer = {
 
 const Stage = memo(function Stage({
   canvasRef,
+  svgRef,
   isDraggingOver,
   setIsDraggingOver,
   onDrop,
@@ -287,7 +288,7 @@ const Stage = memo(function Stage({
 
   return (
     <div className={`flex-1 relative ${isDraggingOver ? 'bg-slate-100/50' : ''}`} style={{ touchAction: 'none', cursor: isPanning ? 'grabbing' : isBrushMode || isEditMode || marquee ? 'crosshair' : scalingGroup ? 'nwse-resize' : 'default' }} onDragOver={(e) => { e.preventDefault(); setIsDraggingOver(true); }} onDragLeave={() => setIsDraggingOver(false)} onDrop={onDrop} onPointerDown={(e) => handlePointerDown(e, null)} onPointerMove={handlePointerMove} onPointerUp={handlePointerUp} onPointerLeave={handlePointerUp} onWheel={handleWheel} onContextMenu={(e) => e.preventDefault()} ref={canvasRef}>
-      <svg className="w-full h-full pointer-events-none" style={{ touchAction: 'none' }}>
+      <svg ref={svgRef} className="w-full h-full pointer-events-none" style={{ touchAction: 'none' }}>
         <defs>
           {textItems.filter((item) => (item.morphAmount ?? 0) > 0.001 || (item.roundnessAmount ?? 0) > 0.001 || (item.adhesionAmount ?? 0) > 0.001).map((textItem) => {
             const effect = getTextEffectSettings(textItem.morphAmount ?? 0, textItem.roundnessAmount ?? 0, textItem.adhesionAmount ?? 0, time);

@@ -244,6 +244,7 @@ export type ToolbarProps = {
 
 export type StageProps = {
   canvasRef: RefObject<HTMLDivElement | null>;
+  svgRef: RefObject<SVGSVGElement | null>;
   isDraggingOver: boolean;
   setIsDraggingOver: Dispatch<SetStateAction<boolean>>;
   onDrop: (e: DragEvent) => void;
