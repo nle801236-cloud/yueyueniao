@@ -107,14 +107,15 @@ const InspectorPanel = memo(function InspectorPanel({
   textLensRange = 0.4,
   setTextLensRange,
 }: InspectorPanelProps) {
+  const effectiveArtboardColor = artboard.backgroundColor === 'transparent' ? '#FFFFFF' : artboard.backgroundColor;
   const activeCmyk = useMemo(() => hexToCmyk(activeColor), [activeColor]);
   const activeRgb = useMemo(() => hexToRgb(activeColor), [activeColor]);
-  const artboardRgb = useMemo(() => hexToRgb(artboard.backgroundColor), [artboard.backgroundColor]);
-  const artboardCmyk = useMemo(() => hexToCmyk(artboard.backgroundColor), [artboard.backgroundColor]);
+  const artboardRgb = useMemo(() => hexToRgb(effectiveArtboardColor), [effectiveArtboardColor]);
+  const artboardCmyk = useMemo(() => hexToCmyk(effectiveArtboardColor), [effectiveArtboardColor]);
   const [colorInputMode, setColorInputMode] = useState<'rgb' | 'hex' | 'cmyk'>('hex');
   const [artboardColorInputMode, setArtboardColorInputMode] = useState<'rgb' | 'hex' | 'cmyk'>('hex');
   const [hexDraft, setHexDraft] = useState(activeColor.toUpperCase());
-  const [artboardHexDraft, setArtboardHexDraft] = useState(artboard.backgroundColor.toUpperCase());
+  const [artboardHexDraft, setArtboardHexDraft] = useState(effectiveArtboardColor.toUpperCase());
   const [artboardSizeDrafts, setArtboardSizeDrafts] = useState(() => ({
     width: pixelsToMillimeters(artboard.width).toFixed(1),
     height: pixelsToMillimeters(artboard.height).toFixed(1),
@@ -125,7 +126,9 @@ const InspectorPanel = memo(function InspectorPanel({
   }, [activeColor]);
 
   useEffect(() => {
-    setArtboardHexDraft(artboard.backgroundColor.toUpperCase());
+    if (artboard.backgroundColor !== 'transparent') {
+      setArtboardHexDraft(artboard.backgroundColor.toUpperCase());
+    }
   }, [artboard.backgroundColor]);
 
   useEffect(() => {
@@ -570,11 +573,29 @@ const InspectorPanel = memo(function InspectorPanel({
             <div className="flex items-center justify-between gap-3 rounded-[22px] bg-white/75 border border-white/90 p-3 shadow-[0_8px_18px_rgba(15,23,42,0.04)]">
               <div className="space-y-1">
                 <div className="text-[10px] font-semibold text-slate-500 tracking-[0.12em]">画板背景色</div>
-                <div className="text-[11px] text-slate-400">预览与导出会同步使用这块底色</div>
+                <div className="text-[11px] text-slate-400">可切换为透明，预览与导出会同步</div>
               </div>
-              <div className="relative shrink-0">
-                <input type="color" value={artboard.backgroundColor} onChange={(e) => applyArtboardColor(e.target.value)} className="absolute inset-0 w-11 h-11 opacity-0 cursor-pointer" />
-                <div className="w-11 h-11 rounded-[16px] border-2 border-white shadow-sm" style={{ backgroundColor: artboard.backgroundColor }} />
+              <div className="flex items-center gap-3 shrink-0">
+                <button
+                  onClick={() => applyArtboardColor(artboard.backgroundColor === 'transparent' ? artboardHexDraft : 'transparent')}
+                  className={`px-3 py-2 rounded-[16px] text-[10px] font-semibold border transition-all ${artboard.backgroundColor === 'transparent' ? 'bg-slate-950 text-white border-slate-950' : 'bg-white text-slate-700 border-slate-200'}`}
+                >
+                  透明
+                </button>
+                <div className="relative">
+                  <input type="color" value={effectiveArtboardColor} onChange={(e) => applyArtboardColor(e.target.value)} className="absolute inset-0 w-11 h-11 opacity-0 cursor-pointer" />
+                  <div
+                    className="w-11 h-11 rounded-[16px] border-2 border-white shadow-sm"
+                    style={{
+                      backgroundColor: artboard.backgroundColor === 'transparent' ? 'transparent' : effectiveArtboardColor,
+                      backgroundImage: artboard.backgroundColor === 'transparent'
+                        ? 'linear-gradient(45deg, #e2e8f0 25%, transparent 25%, transparent 75%, #e2e8f0 75%, #e2e8f0), linear-gradient(45deg, #e2e8f0 25%, transparent 25%, transparent 75%, #e2e8f0 75%, #e2e8f0)'
+                        : undefined,
+                      backgroundPosition: artboard.backgroundColor === 'transparent' ? '0 0, 6px 6px' : undefined,
+                      backgroundSize: artboard.backgroundColor === 'transparent' ? '12px 12px' : undefined,
+                    }}
+                  />
+                </div>
               </div>
             </div>
             <div className="rounded-[22px] bg-white/75 border border-white/90 p-3 shadow-[0_8px_18px_rgba(15,23,42,0.04)] space-y-3">

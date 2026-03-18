@@ -42,6 +42,7 @@ import type {
   MarqueeState,
   MoveSeg,
   Point,
+  ReferenceImageItem,
   ScaleHandle,
   SectionKey,
   Segment,
@@ -108,6 +109,7 @@ const DRAFT_STORAGE_KEY = 'bubble-machine-drafts-v1';
 type PersistedEditorState = {
   elements: ElementItem[];
   textItems: TextItem[];
+  referenceImages: ReferenceImageItem[];
   activeColor: string;
   viewOffset: Point;
   zoom: number;
@@ -173,11 +175,16 @@ export default function App() {
   const [initialStates, setInitialStates] = useState<ElementItem[]>([]);
   const [isDraggingOver, setIsDraggingOver] = useState(false);
   const [selectedTextId, setSelectedTextId] = useState<number | null>(null);
+  const [selectedReferenceImageId, setSelectedReferenceImageId] = useState<number | null>(null);
   const [draggingTextId, setDraggingTextId] = useState<number | null>(null);
+  const [draggingReferenceImageId, setDraggingReferenceImageId] = useState<number | null>(null);
   const [rotatingTextId, setRotatingTextId] = useState<number | null>(null);
   const [scalingTextId, setScalingTextId] = useState<number | null>(null);
+  const [scalingReferenceImageId, setScalingReferenceImageId] = useState<number | null>(null);
   const [textInitialScale, setTextInitialScale] = useState(1);
   const [textInitialDist, setTextInitialDist] = useState(0);
+  const [referenceImageInitialScale, setReferenceImageInitialScale] = useState(1);
+  const [referenceImageInitialDist, setReferenceImageInitialDist] = useState(0);
   const [textRotationSnap, setTextRotationSnap] = useState({ initialRotation: 0, startAngle: 0 });
   const [textLensRange, setTextLensRange] = useState(0.42);
   const [rotationSnap, setRotationSnap] = useState({ initialRotation: 0, startAngle: 0 });
@@ -206,12 +213,14 @@ export default function App() {
   const canvasRef = useRef<HTMLDivElement>(null);
   const stageSvgRef = useRef<SVGSVGElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const referenceImageInputRef = useRef<HTMLInputElement>(null);
   const idRef = useRef(1);
   const didInitialFitRef = useRef(false);
   const dragStartPositionsRef = useRef<Record<number, Point>>({});
   const dragPointerStartRef = useRef<Point>({ x: 0, y: 0 });
   const dragSelectedIdsRef = useRef<number[]>([]);
   const textDragOffsetRef = useRef<Point>({ x: 0, y: 0 });
+  const referenceImageDragOffsetRef = useRef<Point>({ x: 0, y: 0 });
   const clipboardRef = useRef<ClipboardSnapshot | null>(null);
   const clipboardPasteCountRef = useRef(0);
   const hasLoadedPersistedStateRef = useRef(false);
@@ -220,6 +229,7 @@ export default function App() {
   const resetEditorUiState = useCallback(() => {
     setSelectedIds([]);
     setSelectedTextId(null);
+    setSelectedReferenceImageId(null);
     setSelectedPointIdx(null);
     setActivePoint(null);
     setMarquee(null);
@@ -227,8 +237,10 @@ export default function App() {
     setRotatingId(null);
     setScalingId(null);
     setDraggingTextId(null);
+    setDraggingReferenceImageId(null);
     setRotatingTextId(null);
     setScalingTextId(null);
+    setScalingReferenceImageId(null);
     setRotatingGroup(false);
     setScalingGroup(false);
     setIsDrawingBrush(false);
@@ -241,17 +253,21 @@ export default function App() {
   const {
     elements,
     textItems,
+    referenceImages,
     history,
     historyIndex,
     elementsRef,
     textItemsRef,
+    referenceImagesRef,
     hasPendingHistoryRef,
     saveToHistory,
     commitScene,
     commitElements,
     commitTextItems,
+    commitReferenceImages,
     applyInteractiveElements,
     applyInteractiveTextItems,
+    applyInteractiveReferenceImages,
     initializeScene,
     undo,
     redo,
@@ -261,6 +277,7 @@ export default function App() {
   const selectedIdSet = useMemo(() => new Set(selectedIds), [selectedIds]);
   const elementsById = useMemo(() => new Map<number, ElementItem>(elements.map((el) => [el.id, el])), [elements]);
   const textItemsById = useMemo(() => new Map<number, TextItem>(textItems.map((item) => [item.id, item])), [textItems]);
+  const referenceImagesById = useMemo(() => new Map<number, ReferenceImageItem>(referenceImages.map((item) => [item.id, item])), [referenceImages]);
   const selectedElements = useMemo(() => elements.filter((el) => selectedIdSet.has(el.id)), [elements, selectedIdSet]);
   const elementsInLayerOrder = useMemo(() => [...elements].sort((a, b) => a.layerOrder - b.layerOrder || a.id - b.id), [elements]);
   const orderedSceneItems = useMemo(() => getOrderedSceneItems(elements, textItems), [elements, textItems]);
@@ -270,6 +287,7 @@ export default function App() {
     return elementsById.get(selectedIds[0]) || null;
   }, [elementsById, selectedIds]);
   const selectedTextItem = useMemo(() => textItems.find((item) => item.id === selectedTextId) || null, [selectedTextId, textItems]);
+  const selectedReferenceImage = useMemo(() => referenceImages.find((item) => item.id === selectedReferenceImageId) || null, [referenceImages, selectedReferenceImageId]);
 
   const groupBounds = useMemo(() => {
     if (selectedElements.length <= 1) return null;
@@ -343,6 +361,7 @@ export default function App() {
   const buildPersistedEditorState = useCallback((): PersistedEditorState => ({
     elements,
     textItems,
+    referenceImages,
     activeColor,
     viewOffset,
     zoom,
@@ -365,6 +384,7 @@ export default function App() {
     elements,
     glowSettings,
     liquidSettings,
+    referenceImages,
     sectionOpen,
     shapeStyle,
     shapeStyleIntensity,
@@ -418,6 +438,7 @@ export default function App() {
     initializeScene({
       elements: savedState.elements ?? [],
       textItems: savedState.textItems ?? [],
+      referenceImages: savedState.referenceImages ?? [],
     });
     setActiveColor(savedState.activeColor ?? '#f7da2e');
     setViewOffset(savedState.viewOffset ?? { x: 0, y: 0 });
@@ -443,7 +464,8 @@ export default function App() {
 
     const maxElementId = (savedState.elements ?? []).reduce((max, item) => Math.max(max, item.id), 0);
     const maxTextId = (savedState.textItems ?? []).reduce((max, item) => Math.max(max, item.id), 0);
-    idRef.current = Math.max(1, maxElementId, maxTextId) + 1;
+    const maxReferenceImageId = (savedState.referenceImages ?? []).reduce((max, item) => Math.max(max, item.id), 0);
+    idRef.current = Math.max(1, maxElementId, maxTextId, maxReferenceImageId) + 1;
     didInitialFitRef.current = true;
     hasLoadedPersistedStateRef.current = true;
   }, [initializeScene]);
@@ -460,7 +482,7 @@ export default function App() {
   const createNewPage = useCallback(() => {
     const nextArtboard = DEFAULT_ARTBOARD_SETTINGS;
     window.localStorage.removeItem(LOCAL_STORAGE_KEY);
-    initializeScene({ elements: [], textItems: [] });
+    initializeScene({ elements: [], textItems: [], referenceImages: [] });
     setActiveColor(INITIAL_COLORS[0]?.value ?? '#f7da2e');
     setTextLensRange(0.42);
     setLiquidSettings(DEFAULT_LIQUID_SETTINGS);
@@ -502,6 +524,7 @@ export default function App() {
     initializeScene({
       elements: draft.state.elements ?? [],
       textItems: draft.state.textItems ?? [],
+      referenceImages: draft.state.referenceImages ?? [],
     });
     setActiveColor(draft.state.activeColor ?? '#f7da2e');
     setViewOffset(draft.state.viewOffset ?? { x: 0, y: 0 });
@@ -526,7 +549,8 @@ export default function App() {
     });
     const maxElementId = (draft.state.elements ?? []).reduce((max, item) => Math.max(max, item.id), 0);
     const maxTextId = (draft.state.textItems ?? []).reduce((max, item) => Math.max(max, item.id), 0);
-    idRef.current = Math.max(1, maxElementId, maxTextId) + 1;
+    const maxReferenceImageId = (draft.state.referenceImages ?? []).reduce((max, item) => Math.max(max, item.id), 0);
+    idRef.current = Math.max(1, maxElementId, maxTextId, maxReferenceImageId) + 1;
     didInitialFitRef.current = true;
   }, [initializeScene]);
 
@@ -553,6 +577,7 @@ export default function App() {
       activeColor,
       elements: elementsRef.current,
       textItems: textItemsRef.current,
+      referenceImages: referenceImagesRef.current,
     });
   }, [activeColor, artboardCenter.x, artboardCenter.y, nextId]);
 
@@ -567,6 +592,7 @@ export default function App() {
       artboard,
       elements: elementsRef.current,
       textItems: textItemsRef.current,
+      referenceImages: referenceImagesRef.current,
     });
     const id = nextText.id;
     commitTextItems([...textItemsRef.current, nextText]);

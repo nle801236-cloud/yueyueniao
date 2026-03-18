@@ -83,9 +83,23 @@ export type TextItem = {
   grainAmount: number;
 };
 
+export type ReferenceImageItem = {
+  id: number;
+  name: string;
+  src: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  scale: number;
+  layerOrder: number;
+  opacity: number;
+};
+
 export type HistorySnapshot = {
   elements: ElementItem[];
   textItems: TextItem[];
+  referenceImages: ReferenceImageItem[];
 };
 
 export type ClipboardSnapshot = {
@@ -205,6 +219,13 @@ export type SidebarProps = {
   drafts: DraftDocument[];
   openDraft: (draftId: string) => void;
   deleteDraft: (draftId: string) => void;
+  referenceImages: ReferenceImageItem[];
+  selectedTextId: number | null;
+  selectedReferenceImageId: number | null;
+  orderedSceneItems: SceneOrderItem[];
+  selectSceneItem: (item: SceneOrderItem) => void;
+  referenceImageInputRef: RefObject<HTMLInputElement | null>;
+  handleReferenceImageUpload: (e: ChangeEvent<HTMLInputElement>) => void;
   fileInputRef: RefObject<HTMLInputElement | null>;
   handleFileUpload: (e: ChangeEvent<HTMLInputElement>) => void;
   addTextElement: () => void;
@@ -227,6 +248,7 @@ export type ToolbarProps = {
   setIsDrawingBrush: Dispatch<SetStateAction<boolean>>;
   selectedIds: number[];
   hasTextSelection: boolean;
+  hasReferenceImageSelection: boolean;
   moveSelectedBackward: () => void;
   moveSelectedForward: () => void;
   deleteSelectedElements: () => void;
@@ -278,7 +300,9 @@ export type StageProps = {
   artboardRect: { x: number; y: number; width: number; height: number };
   elements: ElementItem[];
   textItems: TextItem[];
+  referenceImages: ReferenceImageItem[];
   selectedTextId: number | null;
+  selectedReferenceImageId: number | null;
   selectedIdSet: Set<number>;
   liquidSettings: LiquidSettings;
   brushPoints: Point[];
@@ -291,11 +315,13 @@ export type StageProps = {
   fitViewToArtboard: () => void;
   textLensRange: number;
   handleTextPointerDown: (e: PointerEvent, id: number, mode?: 'drag' | 'rotate' | 'scale') => void;
+  handleReferenceImagePointerDown: (e: PointerEvent, id: number, mode?: 'drag' | 'scale') => void;
 };
 
 export type SceneOrderItem =
   | { kind: 'element'; id: number; layerOrder: number }
-  | { kind: 'text'; id: number; layerOrder: number };
+  | { kind: 'text'; id: number; layerOrder: number }
+  | { kind: 'referenceImage'; id: number; layerOrder: number };
 
 export type SectionComponentProps = {
   title: string;

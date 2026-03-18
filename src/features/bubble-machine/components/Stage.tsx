@@ -476,7 +476,7 @@ const Stage = memo(function Stage({
             <rect x={-100000} y={artboardRect.y + artboardRect.height} width={200000} height={100000 - artboardRect.y - artboardRect.height} fill="#E2E8F0" fillOpacity={0.7} />
             <rect x={-100000} y={artboardRect.y} width={100000 + artboardRect.x} height={artboardRect.height} fill="#E2E8F0" fillOpacity={0.7} />
             <rect x={artboardRect.x + artboardRect.width} y={artboardRect.y} width={100000 - artboardRect.x - artboardRect.width} height={artboardRect.height} fill="#E2E8F0" fillOpacity={0.7} />
-            <rect x={artboardRect.x} y={artboardRect.y} width={artboardRect.width} height={artboardRect.height} fill={artboard.backgroundColor} stroke="#94a3b8" strokeWidth={1 / zoom} strokeDasharray={`${6 / zoom} ${6 / zoom}`} />
+            <rect x={artboardRect.x} y={artboardRect.y} width={artboardRect.width} height={artboardRect.height} fill={artboard.backgroundColor === 'transparent' ? 'transparent' : artboard.backgroundColor} stroke="#94a3b8" strokeWidth={1 / zoom} strokeDasharray={`${6 / zoom} ${6 / zoom}`} />
           </g>
 
           {contactMode === 'negative' ? (

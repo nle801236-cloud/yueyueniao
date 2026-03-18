@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { ElementItem, HistorySnapshot, TextItem } from '../types';
+import type { ElementItem, HistorySnapshot, ReferenceImageItem, TextItem } from '../types';
 import { deepClone } from '../utils/math';
 
 type ResetInteractionState = () => void;
@@ -11,12 +11,14 @@ export const useSceneHistory = ({
 }) => {
   const [elements, setElements] = useState<ElementItem[]>([]);
   const [textItems, setTextItems] = useState<TextItem[]>([]);
-  const [history, setHistory] = useState<HistorySnapshot[]>([{ elements: [], textItems: [] }]);
+  const [referenceImages, setReferenceImages] = useState<ReferenceImageItem[]>([]);
+  const [history, setHistory] = useState<HistorySnapshot[]>([{ elements: [], textItems: [], referenceImages: [] }]);
   const [historyIndex, setHistoryIndex] = useState(0);
 
   const historyIndexRef = useRef(0);
   const elementsRef = useRef<ElementItem[]>([]);
   const textItemsRef = useRef<TextItem[]>([]);
+  const referenceImagesRef = useRef<ReferenceImageItem[]>([]);
   const hasPendingHistoryRef = useRef(false);
 
   useEffect(() => {
@@ -31,16 +33,21 @@ export const useSceneHistory = ({
     textItemsRef.current = textItems;
   }, [textItems]);
 
-  const buildHistorySnapshot = useCallback((currentElements = elementsRef.current, currentTextItems = textItemsRef.current): HistorySnapshot => ({
+  useEffect(() => {
+    referenceImagesRef.current = referenceImages;
+  }, [referenceImages]);
+
+  const buildHistorySnapshot = useCallback((currentElements = elementsRef.current, currentTextItems = textItemsRef.current, currentReferenceImages = referenceImagesRef.current): HistorySnapshot => ({
     elements: deepClone(currentElements),
     textItems: deepClone(currentTextItems),
+    referenceImages: deepClone(currentReferenceImages),
   }), []);
 
-  const saveToHistory = useCallback((scene?: { elements?: ElementItem[]; textItems?: TextItem[] }) => {
+  const saveToHistory = useCallback((scene?: { elements?: ElementItem[]; textItems?: TextItem[]; referenceImages?: ReferenceImageItem[] }) => {
     setHistory((prev) => {
       const currentIndex = historyIndexRef.current;
       const sliced = prev.slice(0, currentIndex + 1);
-      const snapshot = buildHistorySnapshot(scene?.elements ?? elementsRef.current, scene?.textItems ?? textItemsRef.current);
+      const snapshot = buildHistorySnapshot(scene?.elements ?? elementsRef.current, scene?.textItems ?? textItemsRef.current, scene?.referenceImages ?? referenceImagesRef.current);
       const last = sliced[sliced.length - 1] || [];
       if (JSON.stringify(last) === JSON.stringify(snapshot)) return prev;
       const nextHistory = [...sliced, snapshot];
@@ -51,25 +58,31 @@ export const useSceneHistory = ({
     });
   }, [buildHistorySnapshot]);
 
-  const commitScene = useCallback((nextElements: ElementItem[], nextTextItems: TextItem[], options?: { saveHistory?: boolean }) => {
+  const commitScene = useCallback((nextElements: ElementItem[], nextTextItems: TextItem[], nextReferenceImages: ReferenceImageItem[], options?: { saveHistory?: boolean }) => {
     setElements(nextElements);
     setTextItems(nextTextItems);
+    setReferenceImages(nextReferenceImages);
     elementsRef.current = nextElements;
     textItemsRef.current = nextTextItems;
+    referenceImagesRef.current = nextReferenceImages;
     if (options?.saveHistory === false) {
       hasPendingHistoryRef.current = true;
       return;
     }
-    saveToHistory({ elements: nextElements, textItems: nextTextItems });
+    saveToHistory({ elements: nextElements, textItems: nextTextItems, referenceImages: nextReferenceImages });
     hasPendingHistoryRef.current = false;
   }, [saveToHistory]);
 
   const commitElements = useCallback((next: ElementItem[], options?: { saveHistory?: boolean }) => {
-    commitScene(next, textItemsRef.current, options);
+    commitScene(next, textItemsRef.current, referenceImagesRef.current, options);
   }, [commitScene]);
 
   const commitTextItems = useCallback((next: TextItem[], options?: { saveHistory?: boolean }) => {
-    commitScene(elementsRef.current, next, options);
+    commitScene(elementsRef.current, next, referenceImagesRef.current, options);
+  }, [commitScene]);
+
+  const commitReferenceImages = useCallback((next: ReferenceImageItem[], options?: { saveHistory?: boolean }) => {
+    commitScene(elementsRef.current, textItemsRef.current, next, options);
   }, [commitScene]);
 
   const applyInteractiveElements = useCallback((producer: (prev: ElementItem[]) => ElementItem[]) => {
@@ -90,13 +103,25 @@ export const useSceneHistory = ({
     });
   }, []);
 
+  const applyInteractiveReferenceImages = useCallback((producer: (prev: ReferenceImageItem[]) => ReferenceImageItem[]) => {
+    setReferenceImages((prev) => {
+      const next = producer(prev);
+      referenceImagesRef.current = next;
+      hasPendingHistoryRef.current = true;
+      return next;
+    });
+  }, []);
+
   const restoreSnapshot = useCallback((snapshot: HistorySnapshot) => {
     const nextElements = deepClone(snapshot.elements);
     const nextTextItems = deepClone(snapshot.textItems);
+    const nextReferenceImages = deepClone(snapshot.referenceImages ?? []);
     setElements(nextElements);
     setTextItems(nextTextItems);
+    setReferenceImages(nextReferenceImages);
     elementsRef.current = nextElements;
     textItemsRef.current = nextTextItems;
+    referenceImagesRef.current = nextReferenceImages;
     onResetInteractions();
   }, [onResetInteractions]);
 
@@ -110,7 +135,7 @@ export const useSceneHistory = ({
     const nextIndex = currentIndex - 1;
     historyIndexRef.current = nextIndex;
     setHistoryIndex(nextIndex);
-    restoreSnapshot(history[nextIndex] || { elements: [], textItems: [] });
+    restoreSnapshot(history[nextIndex] || { elements: [], textItems: [], referenceImages: [] });
   }, [history, restoreSnapshot, saveToHistory]);
 
   const redo = useCallback(() => {
@@ -123,17 +148,20 @@ export const useSceneHistory = ({
     const nextIndex = currentIndex + 1;
     historyIndexRef.current = nextIndex;
     setHistoryIndex(nextIndex);
-    restoreSnapshot(history[nextIndex] || { elements: [], textItems: [] });
+    restoreSnapshot(history[nextIndex] || { elements: [], textItems: [], referenceImages: [] });
   }, [history, restoreSnapshot, saveToHistory]);
 
   const initializeScene = useCallback((snapshot: HistorySnapshot) => {
     const nextElements = deepClone(snapshot.elements);
     const nextTextItems = deepClone(snapshot.textItems);
+    const nextReferenceImages = deepClone(snapshot.referenceImages ?? []);
     setElements(nextElements);
     setTextItems(nextTextItems);
+    setReferenceImages(nextReferenceImages);
     elementsRef.current = nextElements;
     textItemsRef.current = nextTextItems;
-    setHistory([{ elements: deepClone(nextElements), textItems: deepClone(nextTextItems) }]);
+    referenceImagesRef.current = nextReferenceImages;
+    setHistory([{ elements: deepClone(nextElements), textItems: deepClone(nextTextItems), referenceImages: deepClone(nextReferenceImages) }]);
     setHistoryIndex(0);
     historyIndexRef.current = 0;
     hasPendingHistoryRef.current = false;
@@ -142,20 +170,25 @@ export const useSceneHistory = ({
   return {
     elements,
     textItems,
+    referenceImages,
     history,
     historyIndex,
     setElements,
     setTextItems,
+    setReferenceImages,
     elementsRef,
     textItemsRef,
+    referenceImagesRef,
     historyIndexRef,
     hasPendingHistoryRef,
     saveToHistory,
     commitScene,
     commitElements,
     commitTextItems,
+    commitReferenceImages,
     applyInteractiveElements,
     applyInteractiveTextItems,
+    applyInteractiveReferenceImages,
     initializeScene,
     undo,
     redo,

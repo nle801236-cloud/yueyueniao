@@ -31,6 +31,10 @@ const escapeXml = (value: string) => value
   .replaceAll('"', '&quot;')
   .replaceAll("'", '&apos;');
 
+const getExportBackgroundFill = (artboard: ArtboardSettings, transparent: boolean) => (
+  transparent || artboard.backgroundColor === 'transparent' ? null : artboard.backgroundColor
+);
+
 const triggerDownload = (blob: Blob, filename: string) => {
   const link = document.createElement('a');
   link.href = URL.createObjectURL(blob);
@@ -307,7 +311,7 @@ export const buildExportSvgString = ({
         </filter>
         <clipPath id="${clipId}"><rect x="0" y="0" width="${width}" height="${height}" /></clipPath>
       </defs>
-      ${transparent ? '' : `<rect x="0" y="0" width="100%" height="100%" fill="${escapeXml(artboard.backgroundColor)}" />`}
+      ${getExportBackgroundFill(artboard, transparent) ? `<rect x="0" y="0" width="100%" height="100%" fill="${escapeXml(getExportBackgroundFill(artboard, transparent) as string)}" />` : ''}
       <g ${artboard.clipContent ? `clip-path="url(#${clipId})"` : ''}>
         ${bodyMarkup}
         ${includeText ? textMarkup : ''}
@@ -381,7 +385,7 @@ export const renderExportCanvas = ({
         .translateSelf((el.x - artboardRect.x) * exportScale, (el.y - artboardRect.y) * exportScale)
         .rotateSelf(el.rotation)
         .scaleSelf(el.scale * exportScale),
-      backgroundFill: transparent ? null : artboard.backgroundColor,
+      backgroundFill: getExportBackgroundFill(artboard, transparent),
     });
 
     drawTextLensScene({

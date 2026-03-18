@@ -4,6 +4,7 @@ import type {
   ElementItem,
   Point,
   PresetItem,
+  ReferenceImageItem,
   ShapeStyle,
   TextItem,
 } from '../types';
@@ -27,6 +28,7 @@ export const createElementFromPathData = ({
   activeColor,
   elements,
   textItems,
+  referenceImages = [],
 }: {
   pathData: string;
   name: string;
@@ -37,6 +39,7 @@ export const createElementFromPathData = ({
   activeColor: string;
   elements: ElementItem[];
   textItems: TextItem[];
+  referenceImages?: ReferenceImageItem[];
 }): ElementItem => {
   let segments = parsePathToSegments(pathData);
   const bounds = getSegmentsBounds(segments);
@@ -74,7 +77,7 @@ export const createElementFromPathData = ({
     y: y ?? artboardCenter.y,
     rotation: 0,
     scale: 1,
-    layerOrder: getNextSceneLayerOrder(elements, textItems),
+    layerOrder: getNextSceneLayerOrder(elements, textItems, referenceImages),
     color: activeColor,
     size: Math.max(bounds.width, bounds.height) / 2 || 50,
     liquidProfile: createRandomLiquidProfile(id),
@@ -110,12 +113,14 @@ export const createDefaultTextItem = ({
   artboard,
   elements,
   textItems,
+  referenceImages = [],
 }: {
   nextId: () => number;
   artboardCenter: Point;
   artboard: ArtboardSettings;
   elements: ElementItem[];
   textItems: TextItem[];
+  referenceImages?: ReferenceImageItem[];
 }): TextItem => ({
   id: nextId(),
   text: 'Bubble',
@@ -124,7 +129,7 @@ export const createDefaultTextItem = ({
   fontSize: Math.max(44, Math.min(88, Math.min(artboard.width, artboard.height) * 0.08)),
   scale: 1,
   rotation: 0,
-  layerOrder: getNextSceneLayerOrder(elements, textItems),
+  layerOrder: getNextSceneLayerOrder(elements, textItems, referenceImages),
   color: DEFAULT_TEXT_COLOR,
   fontFamily: DEFAULT_TEXT_FONT_FAMILY,
   fontWeight: 600,
@@ -164,21 +169,26 @@ export const applyShapeStyleToElementsInArtboard = ({
 export const reorderSceneSelection = ({
   elements,
   textItems,
+  referenceImages,
   selectedIds,
   selectedTextId,
+  selectedReferenceImageId,
   direction,
 }: {
   elements: ElementItem[];
   textItems: TextItem[];
+  referenceImages: ReferenceImageItem[];
   selectedIds: number[];
   selectedTextId: number | null;
+  selectedReferenceImageId: number | null;
   direction: 'forward' | 'backward';
 }) => {
   const selectedKeys = new Set([
+    ...(selectedReferenceImageId !== null ? [`referenceImage:${selectedReferenceImageId}`] : []),
     ...selectedIds.map((id) => `element:${id}`),
     ...(selectedTextId !== null ? [`text:${selectedTextId}`] : []),
   ]);
-  const ordered = getOrderedSceneItems(elements, textItems).map((item) => ({ ...item }));
+  const ordered = getOrderedSceneItems(elements, textItems, referenceImages).map((item) => ({ ...item }));
 
   if (direction === 'backward') {
     for (let index = 1; index < ordered.length; index += 1) {
@@ -202,6 +212,7 @@ export const reorderSceneSelection = ({
 
   const orderMap = new Map(ordered.map((item) => [`${item.kind}:${item.id}`, item.layerOrder]));
   return {
+    referenceImages: referenceImages.map((item) => ({ ...item, layerOrder: orderMap.get(`referenceImage:${item.id}`) ?? item.layerOrder })),
     elements: elements.map((el) => ({ ...el, layerOrder: orderMap.get(`element:${el.id}`) ?? el.layerOrder })),
     textItems: textItems.map((item) => ({ ...item, layerOrder: orderMap.get(`text:${item.id}`) ?? item.layerOrder })),
   };

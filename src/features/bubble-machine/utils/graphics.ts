@@ -13,6 +13,7 @@ import type {
   Segment,
   ShapeStyle,
   TextItem,
+  ReferenceImageItem,
 } from '../types';
 import { hexToRgb } from './color';
 import { clamp01, distanceBetweenPoints, seededUnit } from './math';
@@ -565,15 +566,16 @@ const distortTextBitmap = (sourceCanvas: HTMLCanvasElement, textItem: TextItem, 
   return outCanvas;
 };
 
-export const getOrderedSceneItems = (elements: ElementItem[], textItems: TextItem[]) => (
+export const getOrderedSceneItems = (elements: ElementItem[], textItems: TextItem[], referenceImages: ReferenceImageItem[] = []) => (
   [
+    ...referenceImages.map((item) => ({ kind: 'referenceImage' as const, id: item.id, layerOrder: item.layerOrder })),
     ...elements.map((item) => ({ kind: 'element' as const, id: item.id, layerOrder: item.layerOrder })),
     ...textItems.map((item) => ({ kind: 'text' as const, id: item.id, layerOrder: item.layerOrder })),
-  ].sort((a, b) => a.layerOrder - b.layerOrder || (a.kind === b.kind ? a.id - b.id : a.kind === 'element' ? -1 : 1))
+  ].sort((a, b) => a.layerOrder - b.layerOrder || (a.kind === b.kind ? a.id - b.id : a.kind === 'referenceImage' ? -1 : a.kind === 'element' && b.kind === 'text' ? -1 : 1))
 );
 
-export const getNextSceneLayerOrder = (elements: ElementItem[], textItems: TextItem[]) => {
-  const allOrders = [...elements.map((item) => item.layerOrder), ...textItems.map((item) => item.layerOrder)];
+export const getNextSceneLayerOrder = (elements: ElementItem[], textItems: TextItem[], referenceImages: ReferenceImageItem[] = []) => {
+  const allOrders = [...referenceImages.map((item) => item.layerOrder), ...elements.map((item) => item.layerOrder), ...textItems.map((item) => item.layerOrder)];
   return (allOrders.length ? Math.max(...allOrders) : 0) + 1;
 };
 
