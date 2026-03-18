@@ -35,6 +35,7 @@ import type {
   ContactMode,
   ContactSettings,
   CurveSeg,
+  DraftDocument,
   ElementItem,
   GlowSettings,
   LiquidSettings,
@@ -101,6 +102,49 @@ import {
 } from './src/features/bubble-machine/services/scene-ops';
 import { computeLiquidFiltersAtTime as computeLiquidFilterFrames } from './src/features/bubble-machine/services/liquid-motion';
 
+const LOCAL_STORAGE_KEY = 'bubble-machine-editor-state-v1';
+const DRAFT_STORAGE_KEY = 'bubble-machine-drafts-v1';
+
+type PersistedEditorState = {
+  elements: ElementItem[];
+  textItems: TextItem[];
+  activeColor: string;
+  viewOffset: Point;
+  zoom: number;
+  textLensRange: number;
+  liquidSettings: LiquidSettings;
+  contactMode: ContactMode;
+  glowSettings: GlowSettings;
+  contactSettings: ContactSettings;
+  artboard: ArtboardSettings;
+  shapeStyle: ShapeStyle;
+  shapeStyleIntensity: number;
+  collapsedSidebar: boolean;
+  sectionOpen: Record<SectionKey, boolean>;
+};
+
+type StoredDraftDocument = DraftDocument & {
+  state: PersistedEditorState;
+};
+
+const parsePersistedEditorState = (raw: string | null): PersistedEditorState | null => {
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as PersistedEditorState;
+  } catch {
+    return null;
+  }
+};
+
+const parseDraftDocuments = (raw: string | null): StoredDraftDocument[] => {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw) as StoredDraftDocument[];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+};
 
 export default function App() {
   const [activeColor, setActiveColor] = useState('#f7da2e');
@@ -128,7 +172,6 @@ export default function App() {
   const [groupCenter, setGroupCenter] = useState<Point>({ x: 0, y: 0 });
   const [initialStates, setInitialStates] = useState<ElementItem[]>([]);
   const [isDraggingOver, setIsDraggingOver] = useState(false);
-  const [message, setMessage] = useState<string | null>(null);
   const [selectedTextId, setSelectedTextId] = useState<number | null>(null);
   const [draggingTextId, setDraggingTextId] = useState<number | null>(null);
   const [rotatingTextId, setRotatingTextId] = useState<number | null>(null);
@@ -163,7 +206,6 @@ export default function App() {
   const canvasRef = useRef<HTMLDivElement>(null);
   const stageSvgRef = useRef<SVGSVGElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const messageTimerRef = useRef<number | null>(null);
   const idRef = useRef(1);
   const didInitialFitRef = useRef(false);
   const dragStartPositionsRef = useRef<Record<number, Point>>({});
@@ -172,6 +214,8 @@ export default function App() {
   const textDragOffsetRef = useRef<Point>({ x: 0, y: 0 });
   const clipboardRef = useRef<ClipboardSnapshot | null>(null);
   const clipboardPasteCountRef = useRef(0);
+  const hasLoadedPersistedStateRef = useRef(false);
+  const [drafts, setDrafts] = useState<DraftDocument[]>([]);
 
   const resetEditorUiState = useCallback(() => {
     setSelectedIds([]);
@@ -208,6 +252,7 @@ export default function App() {
     commitTextItems,
     applyInteractiveElements,
     applyInteractiveTextItems,
+    initializeScene,
     undo,
     redo,
   } = useSceneHistory({ onResetInteractions: resetEditorUiState });
@@ -275,21 +320,59 @@ export default function App() {
     return value;
   }, []);
 
-  const fitViewToArtboard = useCallback(() => {
+  const fitViewToArtboardSize = useCallback((width: number, height: number) => {
     const sidebarWidth = collapsedSidebar ? 72 : 320;
     const headerHeight = 64;
     const viewportWidth = Math.max(1, window.innerWidth - sidebarWidth);
     const viewportHeight = Math.max(1, window.innerHeight - headerHeight);
     const padding = 64;
     const fitZoom = Math.min(
-      (viewportWidth - padding * 2) / Math.max(1, artboard.width),
-      (viewportHeight - padding * 2) / Math.max(1, artboard.height),
+      (viewportWidth - padding * 2) / Math.max(1, width),
+      (viewportHeight - padding * 2) / Math.max(1, height),
       1,
     );
     const nextZoom = Math.max(0.1, Math.min(10, fitZoom));
     setZoom(nextZoom);
     setViewOffset({ x: viewportWidth / 2, y: viewportHeight / 2 });
-  }, [artboard.height, artboard.width, collapsedSidebar]);
+  }, [collapsedSidebar]);
+
+  const fitViewToArtboard = useCallback(() => {
+    fitViewToArtboardSize(artboard.width, artboard.height);
+  }, [artboard.height, artboard.width, fitViewToArtboardSize]);
+
+  const buildPersistedEditorState = useCallback((): PersistedEditorState => ({
+    elements,
+    textItems,
+    activeColor,
+    viewOffset,
+    zoom,
+    textLensRange,
+    liquidSettings,
+    contactMode,
+    glowSettings,
+    contactSettings,
+    artboard,
+    shapeStyle,
+    shapeStyleIntensity,
+    collapsedSidebar,
+    sectionOpen,
+  }), [
+    activeColor,
+    artboard,
+    collapsedSidebar,
+    contactMode,
+    contactSettings,
+    elements,
+    glowSettings,
+    liquidSettings,
+    sectionOpen,
+    shapeStyle,
+    shapeStyleIntensity,
+    textItems,
+    textLensRange,
+    viewOffset,
+    zoom,
+  ]);
 
   const getArtboardMotionBaseline = useCallback(() => {
     const artboardElements = elements.filter((el) => (
@@ -321,17 +404,136 @@ export default function App() {
     };
   }, [artboardRect.height, artboardRect.width, artboardRect.x, artboardRect.y, elements]);
 
-  const showMsg = useCallback((text: string) => {
-    setMessage(text);
-    if (messageTimerRef.current) window.clearTimeout(messageTimerRef.current);
-    messageTimerRef.current = window.setTimeout(() => {
-      setMessage(null);
-      messageTimerRef.current = null;
-    }, 2600);
-  }, []);
+  const showMsg = useCallback((_text: string) => {}, []);
 
-  useEffect(() => () => {
-    if (messageTimerRef.current) window.clearTimeout(messageTimerRef.current);
+  useEffect(() => {
+    const savedState = parsePersistedEditorState(window.localStorage.getItem(LOCAL_STORAGE_KEY));
+    const savedDrafts = parseDraftDocuments(window.localStorage.getItem(DRAFT_STORAGE_KEY));
+    setDrafts(savedDrafts.map(({ id, name, createdAt }) => ({ id, name, createdAt })));
+    if (!savedState) {
+      hasLoadedPersistedStateRef.current = true;
+      return;
+    }
+
+    initializeScene({
+      elements: savedState.elements ?? [],
+      textItems: savedState.textItems ?? [],
+    });
+    setActiveColor(savedState.activeColor ?? '#f7da2e');
+    setViewOffset(savedState.viewOffset ?? { x: 0, y: 0 });
+    setZoom(savedState.zoom ?? 1);
+    setTextLensRange(savedState.textLensRange ?? 0.42);
+    setLiquidSettings(savedState.liquidSettings ?? DEFAULT_LIQUID_SETTINGS);
+    setContactMode(savedState.contactMode ?? 'fusion');
+    setGlowSettings(savedState.glowSettings ?? DEFAULT_GLOW_SETTINGS);
+    setContactSettings(savedState.contactSettings ?? DEFAULT_CONTACT_SETTINGS);
+    setArtboard(savedState.artboard ?? DEFAULT_ARTBOARD_SETTINGS);
+    setShapeStyle(savedState.shapeStyle ?? 'polygon');
+    setShapeStyleIntensity(savedState.shapeStyleIntensity ?? 1);
+    setCollapsedSidebar(savedState.collapsedSidebar ?? false);
+    setSectionOpen(savedState.sectionOpen ?? {
+      quick: true,
+      physics: true,
+      color: true,
+      motion: true,
+      style: true,
+      artboard: false,
+      library: true,
+    });
+
+    const maxElementId = (savedState.elements ?? []).reduce((max, item) => Math.max(max, item.id), 0);
+    const maxTextId = (savedState.textItems ?? []).reduce((max, item) => Math.max(max, item.id), 0);
+    idRef.current = Math.max(1, maxElementId, maxTextId) + 1;
+    didInitialFitRef.current = true;
+    hasLoadedPersistedStateRef.current = true;
+  }, [initializeScene]);
+
+  useEffect(() => {
+    if (!hasLoadedPersistedStateRef.current) return undefined;
+    const saveTimer = window.setTimeout(() => {
+      window.localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(buildPersistedEditorState()));
+    }, 180);
+
+    return () => window.clearTimeout(saveTimer);
+  }, [buildPersistedEditorState]);
+
+  const createNewPage = useCallback(() => {
+    const nextArtboard = DEFAULT_ARTBOARD_SETTINGS;
+    window.localStorage.removeItem(LOCAL_STORAGE_KEY);
+    initializeScene({ elements: [], textItems: [] });
+    setActiveColor(INITIAL_COLORS[0]?.value ?? '#f7da2e');
+    setTextLensRange(0.42);
+    setLiquidSettings(DEFAULT_LIQUID_SETTINGS);
+    setContactMode('fusion');
+    setGlowSettings(DEFAULT_GLOW_SETTINGS);
+    setContactSettings(DEFAULT_CONTACT_SETTINGS);
+    setArtboard(nextArtboard);
+    setShapeStyle('polygon');
+    setShapeStyleIntensity(1);
+    idRef.current = 1;
+    didInitialFitRef.current = true;
+    window.requestAnimationFrame(() => {
+      fitViewToArtboardSize(nextArtboard.width, nextArtboard.height);
+    });
+  }, [fitViewToArtboardSize, initializeScene]);
+
+  const saveDraftAndCreateNewPage = useCallback(() => {
+    const now = new Date();
+    const draftId = `draft-${now.getTime()}`;
+    const createdAt = now.toLocaleString('zh-CN', { hour12: false });
+    const nextDrafts = [
+      {
+        id: draftId,
+        name: `草稿 ${createdAt}`,
+        createdAt,
+        state: buildPersistedEditorState(),
+      },
+      ...parseDraftDocuments(window.localStorage.getItem(DRAFT_STORAGE_KEY)),
+    ].slice(0, 20);
+    window.localStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify(nextDrafts));
+    setDrafts(nextDrafts.map(({ id, name, createdAt: itemCreatedAt }) => ({ id, name, createdAt: itemCreatedAt })));
+    createNewPage();
+  }, [buildPersistedEditorState, createNewPage]);
+
+  const openDraft = useCallback((draftId: string) => {
+    const storedDrafts = parseDraftDocuments(window.localStorage.getItem(DRAFT_STORAGE_KEY));
+    const draft = storedDrafts.find((item) => item.id === draftId);
+    if (!draft) return;
+    initializeScene({
+      elements: draft.state.elements ?? [],
+      textItems: draft.state.textItems ?? [],
+    });
+    setActiveColor(draft.state.activeColor ?? '#f7da2e');
+    setViewOffset(draft.state.viewOffset ?? { x: 0, y: 0 });
+    setZoom(draft.state.zoom ?? 1);
+    setTextLensRange(draft.state.textLensRange ?? 0.42);
+    setLiquidSettings(draft.state.liquidSettings ?? DEFAULT_LIQUID_SETTINGS);
+    setContactMode(draft.state.contactMode ?? 'fusion');
+    setGlowSettings(draft.state.glowSettings ?? DEFAULT_GLOW_SETTINGS);
+    setContactSettings(draft.state.contactSettings ?? DEFAULT_CONTACT_SETTINGS);
+    setArtboard(draft.state.artboard ?? DEFAULT_ARTBOARD_SETTINGS);
+    setShapeStyle(draft.state.shapeStyle ?? 'polygon');
+    setShapeStyleIntensity(draft.state.shapeStyleIntensity ?? 1);
+    setCollapsedSidebar(draft.state.collapsedSidebar ?? false);
+    setSectionOpen(draft.state.sectionOpen ?? {
+      quick: true,
+      physics: true,
+      color: true,
+      motion: true,
+      style: true,
+      artboard: false,
+      library: true,
+    });
+    const maxElementId = (draft.state.elements ?? []).reduce((max, item) => Math.max(max, item.id), 0);
+    const maxTextId = (draft.state.textItems ?? []).reduce((max, item) => Math.max(max, item.id), 0);
+    idRef.current = Math.max(1, maxElementId, maxTextId) + 1;
+    didInitialFitRef.current = true;
+  }, [initializeScene]);
+
+  const deleteDraft = useCallback((draftId: string) => {
+    const nextDrafts = parseDraftDocuments(window.localStorage.getItem(DRAFT_STORAGE_KEY)).filter((item) => item.id !== draftId);
+    window.localStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify(nextDrafts));
+    setDrafts(nextDrafts.map(({ id, name, createdAt }) => ({ id, name, createdAt })));
   }, []);
 
   useEffect(() => {
@@ -372,8 +574,7 @@ export default function App() {
     setSelectedIds([]);
     setSelectedPointIdx(null);
     setDraggingTextId(null);
-    showMsg('已添加文字，可直接拖动到气泡上方');
-  }, [artboard.height, artboard.width, artboardCenter.x, artboardCenter.y, commitTextItems, nextId, showMsg]);
+  }, [artboard.height, artboard.width, artboardCenter.x, artboardCenter.y, commitTextItems, nextId]);
 
   const updateSelectedTextItem = useCallback((updater: (prev: TextItem) => TextItem) => {
     if (selectedTextId === null) return;
@@ -672,7 +873,7 @@ export default function App() {
           deleteSelectedPoint();
           return;
         }
-        if (selectedIds.length > 0) {
+        if (selectedIds.length > 0 || selectedTextId !== null) {
           e.preventDefault();
           deleteSelectedElements();
         }
@@ -687,7 +888,7 @@ export default function App() {
       window.removeEventListener('pointerup', onWindowPointerUp);
       window.removeEventListener('pointercancel', onWindowPointerUp);
     };
-  }, [deleteSelectedElements, deleteSelectedPoint, handlePointerUp, isEditMode, selectedIds.length, selectedPointIdx, selectedSingle, undo]);
+  }, [deleteSelectedElements, deleteSelectedPoint, handlePointerUp, isEditMode, selectedIds.length, selectedPointIdx, selectedSingle, selectedTextId, undo]);
 
   const computeLiquidFiltersAtTime = useCallback((sampleTime: number) => {
     return computeLiquidFilterFrames(elements, liquidSettings, sampleTime);
@@ -1022,10 +1223,12 @@ export default function App() {
         const seg = { ...current } as CurveSeg | MoveSeg;
         const incomingCurveIndex = getIncomingCurveIndex(nextSegs, segIndex);
         const outgoingCurveIndex = getOutgoingCurveIndex(nextSegs, segIndex);
+        const anchorX = origPointX ?? seg.x;
+        const anchorY = origPointY ?? seg.y;
 
         if (prop === 'main') {
-          seg.x = (origPointX ?? seg.x) + localDx;
-          seg.y = (origPointY ?? seg.y) + localDy;
+          seg.x = anchorX + localDx;
+          seg.y = anchorY + localDy;
           if (incomingCurveIndex !== null) {
             const incomingCurve = nextSegs[incomingCurveIndex];
             if (incomingCurve && incomingCurve.type === 'C' && origX2 !== undefined && origY2 !== undefined) {
@@ -1049,20 +1252,64 @@ export default function App() {
         } else if (prop === 'in' && incomingCurveIndex !== null) {
           const incomingCurve = nextSegs[incomingCurveIndex];
           if (incomingCurve && incomingCurve.type === 'C') {
-            nextSegs[incomingCurveIndex] = {
+            const nextInX = (origX2 ?? incomingCurve.x2) + localDx;
+            const nextInY = (origY2 ?? incomingCurve.y2) + localDy;
+            const nextIncomingCurve = {
               ...incomingCurve,
-              x2: (origX2 ?? incomingCurve.x2) + localDx,
-              y2: (origY2 ?? incomingCurve.y2) + localDy,
+              x2: nextInX,
+              y2: nextInY,
             };
+            nextSegs[incomingCurveIndex] = nextIncomingCurve;
+            if (incomingCurveIndex === segIndex) {
+              seg.x2 = nextInX;
+              seg.y2 = nextInY;
+            }
+            if (outgoingCurveIndex !== null) {
+              const outgoingCurve = nextSegs[outgoingCurveIndex];
+              if (outgoingCurve && outgoingCurve.type === 'C' && origNextX1 !== undefined && origNextY1 !== undefined) {
+                const mirroredDx = anchorX - nextInX;
+                const mirroredDy = anchorY - nextInY;
+                const draggedLength = Math.hypot(mirroredDx, mirroredDy);
+                const originalOutgoingLength = Math.hypot(origNextX1 - anchorX, origNextY1 - anchorY);
+                const scale = draggedLength > 0.0001 ? originalOutgoingLength / draggedLength : 0;
+                nextSegs[outgoingCurveIndex] = {
+                  ...outgoingCurve,
+                  x1: anchorX + mirroredDx * scale,
+                  y1: anchorY + mirroredDy * scale,
+                };
+              }
+            }
           }
         } else if (prop === 'out' && outgoingCurveIndex !== null) {
           const outgoingCurve = nextSegs[outgoingCurveIndex];
           if (outgoingCurve && outgoingCurve.type === 'C') {
-            nextSegs[outgoingCurveIndex] = {
+            const nextOutX = (origNextX1 ?? outgoingCurve.x1) + localDx;
+            const nextOutY = (origNextY1 ?? outgoingCurve.y1) + localDy;
+            const nextOutgoingCurve = {
               ...outgoingCurve,
-              x1: (origNextX1 ?? outgoingCurve.x1) + localDx,
-              y1: (origNextY1 ?? outgoingCurve.y1) + localDy,
+              x1: nextOutX,
+              y1: nextOutY,
             };
+            nextSegs[outgoingCurveIndex] = nextOutgoingCurve;
+            if (outgoingCurveIndex === segIndex) {
+              seg.x1 = nextOutX;
+              seg.y1 = nextOutY;
+            }
+            if (incomingCurveIndex !== null) {
+              const incomingCurve = nextSegs[incomingCurveIndex];
+              if (incomingCurve && incomingCurve.type === 'C' && origX2 !== undefined && origY2 !== undefined) {
+                const mirroredDx = anchorX - nextOutX;
+                const mirroredDy = anchorY - nextOutY;
+                const draggedLength = Math.hypot(mirroredDx, mirroredDy);
+                const originalIncomingLength = Math.hypot(origX2 - anchorX, origY2 - anchorY);
+                const scale = draggedLength > 0.0001 ? originalIncomingLength / draggedLength : 0;
+                nextSegs[incomingCurveIndex] = {
+                  ...incomingCurve,
+                  x2: anchorX + mirroredDx * scale,
+                  y2: anchorY + mirroredDy * scale,
+                };
+              }
+            }
           }
         }
 
@@ -1179,8 +1426,6 @@ export default function App() {
 
   return (
     <div className="h-screen bg-[radial-gradient(circle_at_top,_#ffffff_0%,_#f4f7fb_52%,_#edf2f8_100%)] font-sans text-slate-700 overflow-hidden select-none antialiased p-4">
-      {message && <div className="absolute top-10 left-1/2 -translate-x-1/2 bg-slate-950 text-white px-6 py-3 rounded-2xl text-xs font-semibold shadow-2xl z-[60] pointer-events-none">{message}</div>}
-
       <div className="flex h-full gap-4">
         <Sidebar
           activeColor={activeColor}
@@ -1195,6 +1440,11 @@ export default function App() {
           collapsedSidebar={collapsedSidebar}
           setCollapsedSidebar={setCollapsedSidebar}
           fillCanvas={fillCanvas}
+          createNewPage={createNewPage}
+          saveDraftAndCreateNewPage={saveDraftAndCreateNewPage}
+          drafts={drafts}
+          openDraft={openDraft}
+          deleteDraft={deleteDraft}
           fileInputRef={fileInputRef}
           handleFileUpload={handleFileUpload}
           addTextElement={addTextElement}

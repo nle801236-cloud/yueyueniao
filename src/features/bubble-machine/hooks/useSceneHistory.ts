@@ -126,6 +126,19 @@ export const useSceneHistory = ({
     restoreSnapshot(history[nextIndex] || { elements: [], textItems: [] });
   }, [history, restoreSnapshot, saveToHistory]);
 
+  const initializeScene = useCallback((snapshot: HistorySnapshot) => {
+    const nextElements = deepClone(snapshot.elements);
+    const nextTextItems = deepClone(snapshot.textItems);
+    setElements(nextElements);
+    setTextItems(nextTextItems);
+    elementsRef.current = nextElements;
+    textItemsRef.current = nextTextItems;
+    setHistory([{ elements: deepClone(nextElements), textItems: deepClone(nextTextItems) }]);
+    setHistoryIndex(0);
+    historyIndexRef.current = 0;
+    hasPendingHistoryRef.current = false;
+  }, [buildHistorySnapshot]);
+
   return {
     elements,
     textItems,
@@ -143,6 +156,7 @@ export const useSceneHistory = ({
     commitTextItems,
     applyInteractiveElements,
     applyInteractiveTextItems,
+    initializeScene,
     undo,
     redo,
   };

@@ -168,6 +168,7 @@ export type LiquidFilterFrame = { id: number; baseFrequency: string; displacemen
 export type ScaleHandle = 'corner' | 'top' | 'right' | 'bottom' | 'left';
 export type ContactSeam = { path: string; shadowOpacity: number };
 export type ContactOverlap = { id: string; a: ElementItem; b: ElementItem };
+export type DraftDocument = { id: string; name: string; createdAt: string };
 
 export type SidebarProps = {
   activeColor: string;
@@ -199,6 +200,11 @@ export type SidebarProps = {
   collapsedSidebar: boolean;
   setCollapsedSidebar: Dispatch<SetStateAction<boolean>>;
   fillCanvas: () => void;
+  createNewPage: () => void;
+  saveDraftAndCreateNewPage: () => void;
+  drafts: DraftDocument[];
+  openDraft: (draftId: string) => void;
+  deleteDraft: (draftId: string) => void;
   fileInputRef: RefObject<HTMLInputElement | null>;
   handleFileUpload: (e: ChangeEvent<HTMLInputElement>) => void;
   addTextElement: () => void;

@@ -36,10 +36,7 @@ import type {
 } from '../types';
 import { cmykToHex, hexToCmyk, hexToRgb, normalizeHex, rgbToHex } from '../utils/color';
 import {
-  centimetersToPixels,
-  getMetricSizeLabel,
   millimetersToPixels,
-  pixelsToCentimeters,
   pixelsToMillimeters,
 } from '../utils/math';
 import Section from './Section';
@@ -118,6 +115,10 @@ const InspectorPanel = memo(function InspectorPanel({
   const [artboardColorInputMode, setArtboardColorInputMode] = useState<'rgb' | 'hex' | 'cmyk'>('hex');
   const [hexDraft, setHexDraft] = useState(activeColor.toUpperCase());
   const [artboardHexDraft, setArtboardHexDraft] = useState(artboard.backgroundColor.toUpperCase());
+  const [artboardSizeDrafts, setArtboardSizeDrafts] = useState(() => ({
+    width: pixelsToMillimeters(artboard.width).toFixed(1),
+    height: pixelsToMillimeters(artboard.height).toFixed(1),
+  }));
 
   useEffect(() => {
     setHexDraft(activeColor.toUpperCase());
@@ -126,6 +127,13 @@ const InspectorPanel = memo(function InspectorPanel({
   useEffect(() => {
     setArtboardHexDraft(artboard.backgroundColor.toUpperCase());
   }, [artboard.backgroundColor]);
+
+  useEffect(() => {
+    setArtboardSizeDrafts({
+      width: pixelsToMillimeters(artboard.width).toFixed(1),
+      height: pixelsToMillimeters(artboard.height).toFixed(1),
+    });
+  }, [artboard.height, artboard.width]);
 
   const applyColor = useCallback((color: string) => {
     setActiveColor(color);
@@ -172,6 +180,24 @@ const InspectorPanel = memo(function InspectorPanel({
     setArtboardHexDraft(normalized.toUpperCase());
     applyArtboardColor(normalized);
   }, [applyArtboardColor, artboardHexDraft]);
+
+  const updateArtboardSizeDraft = useCallback((key: 'width' | 'height', value: string) => {
+    setArtboardSizeDrafts((prev) => ({ ...prev, [key]: value }));
+  }, []);
+
+  const commitArtboardSizeDraft = useCallback((key: 'width' | 'height', min: number, max: number) => {
+    const rawValue = artboardSizeDrafts[key].trim();
+    const parsedMillimeters = Number.parseFloat(rawValue);
+    const fallbackMillimeters = pixelsToMillimeters(artboard[key]);
+    const nextMillimeters = Number.isFinite(parsedMillimeters) ? parsedMillimeters : fallbackMillimeters;
+    const nextPixels = millimetersToPixels(nextMillimeters);
+    const clampedPixels = Math.min(max, Math.max(min, Math.round(nextPixels) || min));
+    setArtboard((prev) => ({ ...prev, [key]: clampedPixels }));
+    setArtboardSizeDrafts((prev) => ({
+      ...prev,
+      [key]: pixelsToMillimeters(clampedPixels).toFixed(1),
+    }));
+  }, [artboard, artboardSizeDrafts, setArtboard]);
 
   return (
     <aside className="w-[356px] h-full bg-white/88 backdrop-blur-2xl border border-white/70 rounded-[30px] z-30 flex flex-col shadow-[0_24px_80px_rgba(15,23,42,0.10)] overflow-y-auto">
@@ -306,18 +332,38 @@ const InspectorPanel = memo(function InspectorPanel({
                       </select>
                     </label>
                     <label className="space-y-1.5 block">
-                      <span className="block text-[10px] font-semibold text-slate-400 tracking-[0.12em]">字重</span>
-                      <select value={selectedTextItem.fontWeight} onChange={(e) => updateSelectedTextItem((prev) => ({ ...prev, fontWeight: parseInt(e.target.value, 10) || 400 }))} className="w-full px-3 py-2.5 rounded-[16px] border border-slate-200 bg-white text-[13px] font-semibold text-slate-700 outline-none focus:border-slate-400">
-                        {[
-                          { label: '常规 400', value: 400 },
-                          { label: '中等 500', value: 500 },
-                          { label: '半粗 600', value: 600 },
-                          { label: '粗体 700', value: 700 },
-                          { label: '特粗 800', value: 800 },
-                        ].map((weight) => (
-                          <option key={weight.value} value={weight.value}>{weight.label}</option>
-                        ))}
-                      </select>
+                      <span className="block text-[10px] font-semibold text-slate-400 tracking-[0.12em]">文字颜色</span>
+                      <div className="flex items-center gap-3 rounded-[16px] border border-slate-200 bg-white px-3 py-2.5">
+                        <input
+                          type="color"
+                          value={selectedTextItem.color}
+                          onChange={(e) => updateSelectedTextItem((prev) => ({ ...prev, color: e.target.value }))}
+                          className="h-9 w-11 shrink-0 rounded-xl border border-slate-200 cursor-pointer"
+                        />
+                        <input
+                          type="text"
+                          value={selectedTextItem.color.toUpperCase()}
+                          onChange={(e) => updateSelectedTextItem((prev) => ({ ...prev, color: normalizeHex(e.target.value) }))}
+                          className="flex-1 bg-transparent text-[13px] font-semibold tracking-[0.08em] text-slate-700 outline-none"
+                        />
+                      </div>
+                    </label>
+                    <label className="space-y-1.5 block">
+                      <div className="flex items-center justify-between gap-3">
+                        <span className="block text-[10px] font-semibold text-slate-400 tracking-[0.12em]">字重</span>
+                        <span className="bg-white px-1.5 py-0.5 rounded border border-slate-200 text-[11px] font-semibold text-slate-500">
+                          {selectedTextItem.fontWeight}
+                        </span>
+                      </div>
+                      <input
+                        type="range"
+                        min={300}
+                        max={900}
+                        step={100}
+                        value={selectedTextItem.fontWeight}
+                        onChange={(e) => updateSelectedTextItem((prev) => ({ ...prev, fontWeight: parseInt(e.target.value, 10) || 400 }))}
+                        className="w-full accent-slate-900"
+                      />
                     </label>
                     {[
                       { label: '文字形态', key: 'morphAmount', hint: '从原始字形逐渐过渡到更柔软、更像液体的文字轮廓。' },
@@ -592,34 +638,32 @@ const InspectorPanel = memo(function InspectorPanel({
               { key: 'height', label: '高度', min: 400, max: 4000 },
             ].map((item) => {
               const pixelValue = artboard[item.key as keyof ArtboardSettings] as number;
-              const updateArtboardDimension = (nextPixels: number) => {
-                const clampedPixels = Math.min(item.max, Math.max(item.min, Math.round(nextPixels) || item.min));
-                setArtboard((prev) => ({ ...prev, [item.key]: clampedPixels }));
-              };
+              const draftValue = artboardSizeDrafts[item.key as 'width' | 'height'];
               return (
                 <div key={item.key} className="space-y-2">
                   <div className="flex justify-between items-center text-[10px] font-semibold text-slate-500 tracking-[0.12em]">
                     <span>{item.label}</span>
-                    <span className="bg-white px-1.5 py-0.5 rounded border border-slate-200">{pixelValue}px</span>
+                    <span className="bg-white px-1.5 py-0.5 rounded border border-slate-200">{pixelsToMillimeters(pixelValue).toFixed(1)} mm</span>
                   </div>
-                  <div className="text-[11px] text-slate-400">{getMetricSizeLabel(pixelValue)}</div>
-                  <div className="flex items-center gap-2">
-                    <input type="range" min={item.min} max={item.max} step={10} value={pixelValue} onChange={(e) => updateArtboardDimension(parseInt(e.target.value, 10) || item.min)} className="flex-1 h-1.5 rounded-full bg-slate-200 appearance-none cursor-pointer" />
-                  </div>
-                  <div className="grid grid-cols-3 gap-2">
-                    <label className="space-y-1">
-                      <span className="block text-[10px] font-semibold text-slate-400 tracking-[0.12em]">PX</span>
-                      <input type="number" min={item.min} max={item.max} step={10} value={pixelValue} onChange={(e) => updateArtboardDimension(parseFloat(e.target.value || '0'))} className="w-full px-2 py-1.5 rounded-2xl border border-slate-200 bg-white text-[11px] font-semibold text-slate-700" />
-                    </label>
-                    <label className="space-y-1">
-                      <span className="block text-[10px] font-semibold text-slate-400 tracking-[0.12em]">MM</span>
-                      <input type="number" min={pixelsToMillimeters(item.min)} max={pixelsToMillimeters(item.max)} step={1} value={pixelsToMillimeters(pixelValue).toFixed(1)} onChange={(e) => updateArtboardDimension(millimetersToPixels(parseFloat(e.target.value || '0')))} className="w-full px-2 py-1.5 rounded-2xl border border-slate-200 bg-white text-[11px] font-semibold text-slate-700" />
-                    </label>
-                    <label className="space-y-1">
-                      <span className="block text-[10px] font-semibold text-slate-400 tracking-[0.12em]">CM</span>
-                      <input type="number" min={pixelsToCentimeters(item.min)} max={pixelsToCentimeters(item.max)} step={0.1} value={pixelsToCentimeters(pixelValue).toFixed(2)} onChange={(e) => updateArtboardDimension(centimetersToPixels(parseFloat(e.target.value || '0')))} className="w-full px-2 py-1.5 rounded-2xl border border-slate-200 bg-white text-[11px] font-semibold text-slate-700" />
-                    </label>
-                  </div>
+                  <label className="space-y-1 block">
+                    <span className="block text-[10px] font-semibold text-slate-400 tracking-[0.12em]">MM</span>
+                    <input
+                      type="number"
+                      min={pixelsToMillimeters(item.min)}
+                      max={pixelsToMillimeters(item.max)}
+                      step={0.1}
+                      value={draftValue}
+                      onChange={(e) => updateArtboardSizeDraft(item.key as 'width' | 'height', e.target.value)}
+                      onBlur={() => commitArtboardSizeDraft(item.key as 'width' | 'height', item.min, item.max)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          commitArtboardSizeDraft(item.key as 'width' | 'height', item.min, item.max);
+                        }
+                      }}
+                      className="w-full px-3 py-2.5 rounded-[16px] border border-slate-200 bg-white text-[13px] font-semibold text-slate-700 outline-none focus:border-slate-400"
+                    />
+                  </label>
                 </div>
               );
             })}
