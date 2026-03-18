@@ -1,0 +1,135 @@
+import React, { memo, useMemo } from 'react';
+import {
+  ChevronRight,
+  FileCode,
+  LayoutGrid,
+  PanelLeftClose,
+  PanelLeftOpen,
+  Sparkles,
+  Type,
+  Wand2,
+} from 'lucide-react';
+
+import { PRESET_DATA } from '../constants';
+import type { SidebarProps } from '../types';
+import BubbleMark from './BubbleMark';
+import Section from './Section';
+
+type SidebarPanelProps = Pick<
+  SidebarProps,
+  | 'activeColor'
+  | 'selectedIds'
+  | 'elements'
+  | 'rerandomizeLiquidProfiles'
+  | 'fitViewToArtboard'
+  | 'shapeStyleIntensity'
+  | 'addElement'
+  | 'sectionOpen'
+  | 'toggleSection'
+  | 'collapsedSidebar'
+  | 'setCollapsedSidebar'
+  | 'fillCanvas'
+  | 'fileInputRef'
+  | 'handleFileUpload'
+  | 'addTextElement'
+> & {
+  getPresetPreviewPath: (path: string, name: string) => string;
+};
+
+const Sidebar = memo(function Sidebar({
+  activeColor,
+  selectedIds,
+  elements,
+  rerandomizeLiquidProfiles,
+  fitViewToArtboard,
+  shapeStyleIntensity,
+  addElement,
+  sectionOpen,
+  toggleSection,
+  collapsedSidebar,
+  setCollapsedSidebar,
+  fillCanvas,
+  fileInputRef,
+  handleFileUpload,
+  addTextElement,
+  getPresetPreviewPath,
+}: SidebarPanelProps) {
+  const presetPreviewPaths = useMemo(() => (
+    PRESET_DATA.reduce<Record<string, string>>((acc, shape) => {
+      acc[shape.name] = getPresetPreviewPath(shape.path, shape.name);
+      return acc;
+    }, {})
+  ), [getPresetPreviewPath, shapeStyleIntensity]);
+
+  return (
+    <aside className={`${collapsedSidebar ? 'w-[84px]' : 'w-[320px]'} h-full bg-white/88 backdrop-blur-2xl border border-white/70 rounded-[30px] z-30 flex flex-col shadow-[0_24px_80px_rgba(15,23,42,0.10)] overflow-y-auto transition-all duration-200`}>
+      <div className={`p-5 border-b border-slate-100/80 flex items-center ${collapsedSidebar ? 'justify-center' : 'gap-4'}`}>
+        <div className="w-12 h-12 rounded-[20px] bg-[#eef7ff] border border-white shadow-[0_10px_24px_rgba(148,163,184,0.12)] flex items-center justify-center">
+          <BubbleMark className="w-10 h-10" />
+        </div>
+        {!collapsedSidebar && (
+          <>
+            <div className="flex-1 min-w-0">
+              <h1 className="text-[22px] font-semibold tracking-tight text-slate-950 leading-none mb-1">Bubble Studio</h1>
+              <span className="text-[11px] font-medium text-slate-400 tracking-wide">创建面板</span>
+            </div>
+            <button onClick={() => setCollapsedSidebar(true)} className="p-2 rounded-xl hover:bg-slate-100/80 text-slate-500"><PanelLeftClose className="w-4 h-4" /></button>
+          </>
+        )}
+        {collapsedSidebar && <button onClick={() => setCollapsedSidebar(false)} className="absolute top-5 left-[72px] p-2 rounded-xl bg-white border border-slate-200 shadow-sm text-slate-500"><PanelLeftOpen className="w-4 h-4" /></button>}
+      </div>
+
+      {collapsedSidebar ? (
+        <div className="p-3 flex flex-col items-center gap-3">
+          {[Wand2, FileCode, Sparkles, LayoutGrid].map((Icon, index) => (
+            <button key={index} onClick={() => setCollapsedSidebar(false)} className="w-11 h-11 rounded-2xl border border-slate-200 hover:bg-slate-100 text-slate-600 flex items-center justify-center">
+              <Icon className="w-4 h-4" />
+            </button>
+          ))}
+        </div>
+      ) : (
+        <div className="p-5 space-y-6 flex-1">
+          <div className="rounded-[26px] bg-[rgba(246,247,251,0.92)] border border-white/90 p-4 space-y-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.9),0_8px_24px_rgba(15,23,42,0.04)]">
+            <div>
+              <div className="text-[11px] font-semibold tracking-[0.12em] text-slate-400 mb-2">工作区</div>
+              <div className="text-sm text-slate-500 leading-6">
+                当前 <span className="font-semibold text-slate-900">{elements.length}</span> 个气泡
+                <br />
+                已选择 <span className="font-semibold text-slate-900">{selectedIds.length}</span> 个对象
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <button onClick={fillCanvas} className="px-3 py-3 rounded-2xl bg-slate-950 text-white text-[11px] font-semibold tracking-wide shadow-[0_12px_30px_rgba(15,23,42,0.16)]">一键填充</button>
+              <button onClick={fitViewToArtboard} className="px-3 py-3 rounded-2xl bg-white/92 text-slate-700 text-[11px] font-semibold tracking-wide border border-slate-200/90 shadow-[0_10px_24px_rgba(15,23,42,0.04)]">适配画板</button>
+              <button onClick={rerandomizeLiquidProfiles} className="px-3 py-3 rounded-2xl bg-white/92 text-slate-700 text-[11px] font-semibold tracking-wide border border-slate-200/90 shadow-[0_10px_24px_rgba(15,23,42,0.04)]">液体随机</button>
+              <button onClick={() => fileInputRef.current?.click()} className="px-3 py-3 rounded-2xl bg-white/92 text-slate-700 text-[11px] font-semibold tracking-wide border border-slate-200/90 shadow-[0_10px_24px_rgba(15,23,42,0.04)]">导入 SVG</button>
+              <button onClick={addTextElement} className="col-span-2 px-3 py-3 rounded-2xl bg-white/92 text-slate-700 text-[11px] font-semibold tracking-wide border border-slate-200/90 shadow-[0_10px_24px_rgba(15,23,42,0.04)] flex items-center justify-center gap-2">
+                <Type className="w-4 h-4" />
+                添加文字
+              </button>
+            </div>
+            <input type="file" ref={fileInputRef} onChange={handleFileUpload} accept=".svg" className="hidden" />
+          </div>
+
+          <Section title="预设素材" icon={LayoutGrid} open={sectionOpen.library} onToggle={() => toggleSection('library')}>
+            <div className="grid grid-cols-1 gap-2 pb-6">
+              {PRESET_DATA.map((shape) => (
+                <button key={shape.name} onClick={() => addElement(shape.path, shape.name)} className="group flex items-center justify-between p-3 rounded-2xl hover:bg-slate-950 hover:text-white transition-all border border-slate-100/90 bg-white/92 shadow-[0_10px_24px_rgba(15,23,42,0.05)]">
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-2xl bg-slate-50/90 flex items-center justify-center">
+                      <svg viewBox="-50 -50 100 100" className="w-5 h-5"><path d={presetPreviewPaths[shape.name] || shape.path} fill={activeColor} stroke="none" /></svg>
+                    </div>
+                    <span className="text-sm font-medium tracking-tight">{shape.name}</span>
+                  </div>
+                  <ChevronRight className="w-4 h-4 opacity-0 group-hover:opacity-40 transition-opacity" />
+                </button>
+              ))}
+            </div>
+          </Section>
+        </div>
+      )}
+    </aside>
+  );
+});
+
+export default Sidebar;
