@@ -94,6 +94,7 @@ export type ReferenceImageItem = {
   scale: number;
   layerOrder: number;
   opacity: number;
+  locked: boolean;
 };
 
 export type HistorySnapshot = {
@@ -224,6 +225,8 @@ export type SidebarProps = {
   selectedReferenceImageId: number | null;
   orderedSceneItems: SceneOrderItem[];
   selectSceneItem: (item: SceneOrderItem) => void;
+  reorderSceneItems: (dragged: SceneOrderItem, target: SceneOrderItem) => void;
+  toggleReferenceImageLock: (id: number) => void;
   referenceImageInputRef: RefObject<HTMLInputElement | null>;
   handleReferenceImageUpload: (e: ChangeEvent<HTMLInputElement>) => void;
   fileInputRef: RefObject<HTMLInputElement | null>;

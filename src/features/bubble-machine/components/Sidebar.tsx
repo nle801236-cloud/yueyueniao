@@ -4,6 +4,8 @@ import {
   FileCode,
   Image as ImageIcon,
   LayoutGrid,
+  Lock,
+  Unlock,
   PanelLeftClose,
   PanelLeftOpen,
   Sparkles,
@@ -40,6 +42,8 @@ type SidebarPanelProps = Pick<
   | 'selectedReferenceImageId'
   | 'orderedSceneItems'
   | 'selectSceneItem'
+  | 'reorderSceneItems'
+  | 'toggleReferenceImageLock'
   | 'referenceImageInputRef'
   | 'handleReferenceImageUpload'
   | 'fileInputRef'
@@ -72,6 +76,8 @@ const Sidebar = memo(function Sidebar({
   selectedReferenceImageId,
   orderedSceneItems,
   selectSceneItem,
+  reorderSceneItems,
+  toggleReferenceImageLock,
   referenceImageInputRef,
   handleReferenceImageUpload,
   fileInputRef,
@@ -85,6 +91,11 @@ const Sidebar = memo(function Sidebar({
       return acc;
     }, {})
   ), [getPresetPreviewPath, shapeStyleIntensity]);
+  const [draggingLayer, setDraggingLayer] = React.useState<{ kind: 'element' | 'text' | 'referenceImage'; id: number; layerOrder: number } | null>(null);
+  const displaySceneItems = useMemo(
+    () => [...orderedSceneItems].sort((a, b) => b.layerOrder - a.layerOrder || b.id - a.id),
+    [orderedSceneItems],
+  );
 
   return (
     <aside className={`${collapsedSidebar ? 'w-[84px]' : 'w-[320px]'} h-full bg-white/88 backdrop-blur-2xl border border-white/70 rounded-[30px] z-30 flex flex-col shadow-[0_24px_80px_rgba(15,23,42,0.10)] overflow-y-auto transition-all duration-200`}>
@@ -161,33 +172,58 @@ const Sidebar = memo(function Sidebar({
                 </div>
               </div>
             )}
-            {(referenceImages.length > 0 || orderedSceneItems.length > 0) && (
+            {displaySceneItems.length > 0 && (
               <div className="space-y-2 pt-1">
                 <div className="text-[11px] font-semibold tracking-[0.12em] text-slate-400">图层</div>
                 <div className="space-y-2">
-                  {[...referenceImages].sort((a, b) => a.layerOrder - b.layerOrder || a.id - b.id).map((item) => (
-                    <button
-                      key={`ref-layer-${item.id}`}
-                      onClick={() => selectSceneItem({ kind: 'referenceImage', id: item.id, layerOrder: item.layerOrder })}
-                      className={`w-full flex items-center justify-between rounded-2xl border px-3 py-2 text-left shadow-[0_10px_24px_rgba(15,23,42,0.04)] ${selectedReferenceImageId === item.id ? 'border-slate-950 bg-slate-950 text-white' : 'border-slate-200/90 bg-white/92 text-slate-700'}`}
-                    >
-                      <span className="truncate text-[12px] font-semibold">参考图 · {item.name}</span>
-                      <span className="text-[10px] opacity-70">底层</span>
-                    </button>
-                  ))}
-                  {[...orderedSceneItems].sort((a, b) => b.layerOrder - a.layerOrder || b.id - a.id).map((item) => {
+                  {displaySceneItems.map((item) => {
                     const isText = item.kind === 'text';
-                    const isSelected = item.kind === 'element' ? selectedIds.includes(item.id) : selectedTextId === item.id;
-                    const label = isText ? `文字 · ${item.id}` : `气泡 · ${elements.find((element) => element.id === item.id)?.name || item.id}`;
+                    const isReferenceImage = item.kind === 'referenceImage';
+                    const referenceImage = isReferenceImage ? referenceImages.find((entry) => entry.id === item.id) : null;
+                    const isSelected = item.kind === 'element'
+                      ? selectedIds.includes(item.id)
+                      : item.kind === 'text'
+                        ? selectedTextId === item.id
+                        : selectedReferenceImageId === item.id;
+                    const label = isReferenceImage
+                      ? `参考图 · ${referenceImage?.name || item.id}`
+                      : isText
+                        ? `文字 · ${item.id}`
+                        : `气泡 · ${elements.find((element) => element.id === item.id)?.name || item.id}`;
+                    const typeLabel = isReferenceImage ? '参考图' : isText ? '文字' : '气泡';
                     return (
-                      <button
+                      <div
                         key={`${item.kind}-${item.id}`}
-                        onClick={() => selectSceneItem(item)}
+                        draggable
+                        onDragStart={() => setDraggingLayer(item)}
+                        onDragOver={(e) => e.preventDefault()}
+                        onDrop={(e) => {
+                          e.preventDefault();
+                          if (draggingLayer) reorderSceneItems(draggingLayer, item);
+                          setDraggingLayer(null);
+                        }}
+                        onDragEnd={() => setDraggingLayer(null)}
                         className={`w-full flex items-center justify-between rounded-2xl border px-3 py-2 text-left shadow-[0_10px_24px_rgba(15,23,42,0.04)] ${isSelected ? 'border-slate-950 bg-slate-950 text-white' : 'border-slate-200/90 bg-white/92 text-slate-700'}`}
                       >
-                        <span className="truncate text-[12px] font-semibold">{label}</span>
-                        <span className="text-[10px] opacity-70">{isText ? '文字' : '气泡'}</span>
-                      </button>
+                        <button
+                          onClick={() => selectSceneItem(item)}
+                          className="flex-1 min-w-0 text-left"
+                        >
+                          <span className="block truncate text-[12px] font-semibold">{label}</span>
+                        </button>
+                        <div className="flex items-center gap-2 shrink-0">
+                          <span className="text-[10px] opacity-70">{typeLabel}</span>
+                          {isReferenceImage && referenceImage && (
+                            <button
+                              onClick={() => toggleReferenceImageLock(referenceImage.id)}
+                              className={`rounded-xl p-1 ${isSelected ? 'hover:bg-white/10' : 'hover:bg-slate-100/80'}`}
+                              title={referenceImage.locked ? '解锁参考图' : '锁定参考图'}
+                            >
+                              {referenceImage.locked ? <Lock className="w-3.5 h-3.5" /> : <Unlock className="w-3.5 h-3.5" />}
+                            </button>
+                          )}
+                        </div>
+                      </div>
                     );
                   })}
                 </div>

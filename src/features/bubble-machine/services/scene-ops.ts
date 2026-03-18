@@ -218,6 +218,39 @@ export const reorderSceneSelection = ({
   };
 };
 
+export const reorderSceneItemsFromList = ({
+  elements,
+  textItems,
+  referenceImages,
+  displayOrder,
+}: {
+  elements: ElementItem[];
+  textItems: TextItem[];
+  referenceImages: ReferenceImageItem[];
+  displayOrder: Array<{ kind: 'element' | 'text' | 'referenceImage'; id: number }>;
+}) => {
+  const nextLayerOrder = new Map<string, number>();
+  const normalizedBottomToTop = [...displayOrder].reverse();
+  normalizedBottomToTop.forEach((item, index) => {
+    nextLayerOrder.set(`${item.kind}:${item.id}`, index);
+  });
+
+  return {
+    referenceImages: referenceImages.map((item) => ({
+      ...item,
+      layerOrder: nextLayerOrder.get(`referenceImage:${item.id}`) ?? item.layerOrder,
+    })),
+    elements: elements.map((item) => ({
+      ...item,
+      layerOrder: nextLayerOrder.get(`element:${item.id}`) ?? item.layerOrder,
+    })),
+    textItems: textItems.map((item) => ({
+      ...item,
+      layerOrder: nextLayerOrder.get(`text:${item.id}`) ?? item.layerOrder,
+    })),
+  };
+};
+
 const createFilledPresetElement = ({
   preset,
   color,

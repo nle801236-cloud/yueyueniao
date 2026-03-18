@@ -99,6 +99,7 @@ import {
   createElementFromPathData,
   generateFilledElements,
   normalizeElementScaleToArtboard,
+  reorderSceneItemsFromList,
   reorderSceneSelection,
 } from './src/features/bubble-machine/services/scene-ops';
 import { computeLiquidFiltersAtTime as computeLiquidFilterFrames } from './src/features/bubble-machine/services/liquid-motion';
@@ -280,7 +281,7 @@ export default function App() {
   const referenceImagesById = useMemo(() => new Map<number, ReferenceImageItem>(referenceImages.map((item) => [item.id, item])), [referenceImages]);
   const selectedElements = useMemo(() => elements.filter((el) => selectedIdSet.has(el.id)), [elements, selectedIdSet]);
   const elementsInLayerOrder = useMemo(() => [...elements].sort((a, b) => a.layerOrder - b.layerOrder || a.id - b.id), [elements]);
-  const orderedSceneItems = useMemo(() => getOrderedSceneItems(elements, textItems), [elements, textItems]);
+  const orderedSceneItems = useMemo(() => getOrderedSceneItems(elements, textItems, referenceImages), [elements, referenceImages, textItems]);
 
   const selectedSingle = useMemo<ElementItem | null>(() => {
     if (selectedIds.length !== 1) return null;
@@ -671,6 +672,7 @@ export default function App() {
           scale: 1,
           layerOrder,
           opacity: 1,
+          locked: false,
         };
         commitReferenceImages([...referenceImagesRef.current, nextReferenceImage]);
         setSelectedReferenceImageId(nextReferenceImage.id);
@@ -798,6 +800,31 @@ export default function App() {
     setSelectedTextId(null);
     setSelectedReferenceImageId(item.id);
   }, []);
+
+  const reorderSceneItems = useCallback((dragged: { kind: 'element' | 'text' | 'referenceImage'; id: number }, target: { kind: 'element' | 'text' | 'referenceImage'; id: number }) => {
+    if (dragged.kind === target.kind && dragged.id === target.id) return;
+    const displayOrder = [...orderedSceneItems]
+      .sort((a, b) => b.layerOrder - a.layerOrder || b.id - a.id)
+      .map((item) => ({ kind: item.kind, id: item.id }));
+    const fromIndex = displayOrder.findIndex((item) => item.kind === dragged.kind && item.id === dragged.id);
+    const toIndex = displayOrder.findIndex((item) => item.kind === target.kind && item.id === target.id);
+    if (fromIndex < 0 || toIndex < 0 || fromIndex === toIndex) return;
+    const [moved] = displayOrder.splice(fromIndex, 1);
+    displayOrder.splice(toIndex, 0, moved);
+    const next = reorderSceneItemsFromList({
+      elements: elementsRef.current,
+      textItems: textItemsRef.current,
+      referenceImages: referenceImagesRef.current,
+      displayOrder,
+    });
+    commitScene(next.elements, next.textItems, next.referenceImages);
+  }, [commitScene, orderedSceneItems]);
+
+  const toggleReferenceImageLock = useCallback((id: number) => {
+    commitReferenceImages(referenceImagesRef.current.map((item) => (
+      item.id === id ? { ...item, locked: !item.locked } : item
+    )));
+  }, [commitReferenceImages]);
 
   const deleteSelectedPoint = useCallback(() => {
     if (!isEditMode || selectedPointIdx === null || !selectedSingle) return;
@@ -1290,6 +1317,7 @@ export default function App() {
     setSelectedIds([]);
     setSelectedTextId(null);
     setSelectedPointIdx(null);
+    if (target.locked) return;
     if (mode === 'drag') {
       setDraggingReferenceImageId(id);
       setScalingReferenceImageId(null);
@@ -1608,6 +1636,8 @@ export default function App() {
           selectedReferenceImageId={selectedReferenceImageId}
           orderedSceneItems={orderedSceneItems}
           selectSceneItem={selectSceneItem}
+          reorderSceneItems={reorderSceneItems}
+          toggleReferenceImageLock={toggleReferenceImageLock}
           referenceImageInputRef={referenceImageInputRef}
           handleReferenceImageUpload={handleReferenceImageUpload}
           fileInputRef={fileInputRef}
