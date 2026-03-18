@@ -14,6 +14,7 @@ const Toolbar = memo(function Toolbar({
   setIsDrawingBrush,
   selectedIds,
   hasTextSelection,
+  hasReferenceImageSelection,
   moveSelectedBackward,
   moveSelectedForward,
   deleteSelectedElements,
@@ -62,13 +63,13 @@ const Toolbar = memo(function Toolbar({
             <Maximize2 className="w-4 h-4" />
             {isEditMode ? '退出编辑' : '曲率编辑'}
           </button>
-          <button onClick={moveSelectedBackward} disabled={selectedIds.length === 0 && !hasTextSelection} className="px-3 py-2.5 rounded-[18px] text-[11px] font-semibold tracking-wide border bg-transparent text-slate-600 border-transparent hover:bg-slate-100/80 disabled:opacity-30">
+          <button onClick={moveSelectedBackward} disabled={selectedIds.length === 0 && !hasTextSelection && !hasReferenceImageSelection} className="px-3 py-2.5 rounded-[18px] text-[11px] font-semibold tracking-wide border bg-transparent text-slate-600 border-transparent hover:bg-slate-100/80 disabled:opacity-30">
             下移
           </button>
-          <button onClick={moveSelectedForward} disabled={selectedIds.length === 0 && !hasTextSelection} className="px-3 py-2.5 rounded-[18px] text-[11px] font-semibold tracking-wide border bg-transparent text-slate-600 border-transparent hover:bg-slate-100/80 disabled:opacity-30">
+          <button onClick={moveSelectedForward} disabled={selectedIds.length === 0 && !hasTextSelection && !hasReferenceImageSelection} className="px-3 py-2.5 rounded-[18px] text-[11px] font-semibold tracking-wide border bg-transparent text-slate-600 border-transparent hover:bg-slate-100/80 disabled:opacity-30">
             上移
           </button>
-          <button onClick={deleteSelectedElements} disabled={selectedIds.length === 0 && !hasTextSelection} className="p-2 text-red-500 rounded-[18px] hover:bg-red-50 transition-all disabled:opacity-20" title="删除">
+          <button onClick={deleteSelectedElements} disabled={selectedIds.length === 0 && !hasTextSelection && !hasReferenceImageSelection} className="p-2 text-red-500 rounded-[18px] hover:bg-red-50 transition-all disabled:opacity-20" title="删除">
             <Trash2 className="w-5 h-5" />
           </button>
         </div>

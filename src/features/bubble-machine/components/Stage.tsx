@@ -1,6 +1,6 @@
 import React, { memo, useCallback, useEffect, useMemo, useState } from 'react';
 import { FileCode, Hand, Info, Maximize2, Pencil, Target, ZoomIn } from 'lucide-react';
-import type { ElementItem, StageProps, TextItem } from '../types';
+import type { ElementItem, ReferenceImageItem, StageProps, TextItem } from '../types';
 import {
   drawNegativeContactScene,
   drawTextLensScene,
@@ -49,7 +49,9 @@ const Stage = memo(function Stage({
   artboardRect,
   elements,
   textItems,
+  referenceImages,
   selectedTextId,
+  selectedReferenceImageId,
   selectedIdSet,
   liquidSettings,
   brushPoints,
@@ -62,6 +64,7 @@ const Stage = memo(function Stage({
   fitViewToArtboard,
   textLensRange,
   handleTextPointerDown,
+  handleReferenceImagePointerDown,
 }: StageProps) {
   const elementsById = useMemo(() => new Map<number, ElementItem>(elements.map((el) => [el.id, el])), [elements]);
   const textItemsById = useMemo(() => new Map<number, TextItem>(textItems.map((item) => [item.id, item])), [textItems]);
@@ -74,6 +77,10 @@ const Stage = memo(function Stage({
     return ids;
   }, [elementsInLayerOrder, textItems]);
   const orderedSceneItems = useMemo(() => getOrderedSceneItems(elements, textItems), [elements, textItems]);
+  const referenceImagesInLayerOrder = useMemo(
+    () => [...referenceImages].sort((a, b) => a.layerOrder - b.layerOrder || a.id - b.id),
+    [referenceImages],
+  );
   const highestElementLayerOrder = useMemo(() => elementsInLayerOrder.reduce((max, el) => Math.max(max, el.layerOrder), -Infinity), [elementsInLayerOrder]);
   const textItemsBehindBubbles = useMemo(() => (
     textItems.filter((item) => item.layerOrder < highestElementLayerOrder)
@@ -91,6 +98,20 @@ const Stage = memo(function Stage({
   const viewportWidth = canvasRef.current?.clientWidth ?? 1;
   const viewportHeight = canvasRef.current?.clientHeight ?? 1;
   const textMaskPadding = Math.max(80, 180 / Math.max(zoom, 0.1));
+  const selectedReferenceImageBounds = useMemo(() => {
+    if (!selectedReferenceImageId) return null;
+    const item = referenceImages.find((entry) => entry.id === selectedReferenceImageId);
+    if (!item) return null;
+    const width = item.width * item.scale;
+    const height = item.height * item.scale;
+    return {
+      ...item,
+      left: item.x - width / 2,
+      top: item.y - height / 2,
+      width,
+      height,
+    };
+  }, [referenceImages, selectedReferenceImageId]);
 
   const renderTextSceneItem = useCallback((textItem: TextItem, keyPrefix = 'scene-text', options?: { applyEffects?: boolean }) => (
     <g key={`${keyPrefix}-${textItem.id}`} transform={`translate(${textItem.x}, ${textItem.y}) rotate(${textItem.rotation}) scale(${textItem.scale})`} filter={options?.applyEffects !== false && ((textItem.morphAmount ?? 0) > 0.001 || (textItem.roundnessAmount ?? 0) > 0.001 || (textItem.adhesionAmount ?? 0) > 0.001) ? `url(#text-effect-${textItem.id})` : undefined}>
@@ -136,6 +157,28 @@ const Stage = memo(function Stage({
   ), []);
 
   const renderBubbleSurfaceOverlay = useCallback(() => null, []);
+
+  const renderReferenceImages = useCallback((items: ReferenceImageItem[]) => (
+    items.map((item) => (
+      <g
+        key={`reference-image-${item.id}`}
+        transform={`translate(${item.x}, ${item.y}) scale(${item.scale})`}
+        className="pointer-events-auto"
+        style={{ touchAction: 'none' }}
+      >
+        <image
+          href={item.src}
+          x={-item.width / 2}
+          y={-item.height / 2}
+          width={item.width}
+          height={item.height}
+          opacity={item.opacity}
+          preserveAspectRatio="xMidYMid meet"
+          onPointerDown={(e) => handleReferenceImagePointerDown(e, item.id, 'drag')}
+        />
+      </g>
+    ))
+  ), [handleReferenceImagePointerDown]);
 
   useEffect(() => {
     if (contactMode !== 'negative') {
@@ -479,6 +522,10 @@ const Stage = memo(function Stage({
             <rect x={artboardRect.x} y={artboardRect.y} width={artboardRect.width} height={artboardRect.height} fill={artboard.backgroundColor === 'transparent' ? 'transparent' : artboard.backgroundColor} stroke="#94a3b8" strokeWidth={1 / zoom} strokeDasharray={`${6 / zoom} ${6 / zoom}`} />
           </g>
 
+          <g clipPath={artboard.clipContent ? 'url(#workspace-artboard-clip)' : undefined}>
+            {renderReferenceImages(referenceImagesInLayerOrder)}
+          </g>
+
           {contactMode === 'negative' ? (
             <g clipPath={artboard.clipContent ? 'url(#workspace-artboard-clip)' : undefined}>
               {textBaseSceneHref && (
@@ -682,6 +729,44 @@ const Stage = memo(function Stage({
                   </g>
                 );
               })}
+            </g>
+          )}
+
+          {selectedReferenceImageBounds && (
+            <g data-ui="true" clipPath={artboard.clipContent ? 'url(#workspace-artboard-clip)' : undefined}>
+              <rect
+                x={selectedReferenceImageBounds.left}
+                y={selectedReferenceImageBounds.top}
+                width={selectedReferenceImageBounds.width}
+                height={selectedReferenceImageBounds.height}
+                fill="none"
+                stroke="#3b82f6"
+                strokeWidth={1 / zoom}
+                strokeDasharray={`${4 / zoom} ${4 / zoom}`}
+                pointerEvents="none"
+                opacity={0.75}
+              />
+              <rect
+                x={selectedReferenceImageBounds.left}
+                y={selectedReferenceImageBounds.top}
+                width={selectedReferenceImageBounds.width}
+                height={selectedReferenceImageBounds.height}
+                fill="transparent"
+                className="pointer-events-auto"
+                style={{ touchAction: 'none' }}
+                onPointerDown={(e) => handleReferenceImagePointerDown(e, selectedReferenceImageBounds.id, 'drag')}
+              />
+              <circle
+                cx={selectedReferenceImageBounds.left + selectedReferenceImageBounds.width}
+                cy={selectedReferenceImageBounds.top + selectedReferenceImageBounds.height}
+                r={6 / zoom}
+                fill="white"
+                stroke="#3b82f6"
+                strokeWidth={1.4 / zoom}
+                className="pointer-events-auto"
+                style={{ touchAction: 'none' }}
+                onPointerDown={(e) => handleReferenceImagePointerDown(e, selectedReferenceImageBounds.id, 'scale')}
+              />
             </g>
           )}
 

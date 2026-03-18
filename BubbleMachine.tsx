@@ -597,6 +597,7 @@ export default function App() {
     const id = nextText.id;
     commitTextItems([...textItemsRef.current, nextText]);
     setSelectedTextId(id);
+    setSelectedReferenceImageId(null);
     setSelectedIds([]);
     setSelectedPointIdx(null);
     setDraggingTextId(null);
@@ -637,7 +638,55 @@ export default function App() {
     commitElements(next);
     setSelectedIds([newElement.id]);
     setSelectedTextId(null);
+    setSelectedReferenceImageId(null);
   }, [commitElements, createElementFromPath, elements, getArtboardMotionBaseline, liquidSettings.importAmplitudeMode, normalizeNewElementScale, shapeStyle, shapeStyleIntensity]);
+
+  const handleReferenceImageFile = useCallback((file: File) => {
+    if (!file.type.startsWith('image/') && !/\.(png|jpe?g)$/i.test(file.name)) return;
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const src = String(event.target?.result || '');
+      if (!src) return;
+      const img = new Image();
+      img.onload = () => {
+        const maxWidth = artboard.width * 0.75;
+        const maxHeight = artboard.height * 0.75;
+        const ratio = Math.min(maxWidth / Math.max(1, img.width), maxHeight / Math.max(1, img.height), 1);
+        const width = Math.max(80, Math.round(img.width * ratio));
+        const height = Math.max(80, Math.round(img.height * ratio));
+        const existingOrders = [
+          ...referenceImagesRef.current.map((item) => item.layerOrder),
+          ...elementsRef.current.map((item) => item.layerOrder),
+          ...textItemsRef.current.map((item) => item.layerOrder),
+        ];
+        const layerOrder = (existingOrders.length ? Math.min(...existingOrders) : 0) - 1;
+        const nextReferenceImage: ReferenceImageItem = {
+          id: nextId(),
+          name: file.name.replace(/\.[^.]+$/, '') || '参考图',
+          src,
+          x: artboardCenter.x,
+          y: artboardCenter.y,
+          width,
+          height,
+          scale: 1,
+          layerOrder,
+          opacity: 1,
+        };
+        commitReferenceImages([...referenceImagesRef.current, nextReferenceImage]);
+        setSelectedReferenceImageId(nextReferenceImage.id);
+        setSelectedIds([]);
+        setSelectedTextId(null);
+      };
+      img.src = src;
+    };
+    reader.readAsDataURL(file);
+  }, [artboard.height, artboard.width, artboardCenter.x, artboardCenter.y, commitReferenceImages, nextId]);
+
+  const handleReferenceImageUpload = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) handleReferenceImageFile(file);
+    e.target.value = '';
+  }, [handleReferenceImageFile]);
 
   const getPresetPreviewPath = useCallback((pathData: string, name: string) => (
     morphPathByStyle(pathData, 'smooth', name.length * 97, shapeStyleIntensity * 0.5)
@@ -683,6 +732,11 @@ export default function App() {
   }, [commitElements, elements, nextId, showMsg]);
 
   const deleteSelectedElements = useCallback(() => {
+    if (selectedReferenceImageId !== null) {
+      commitReferenceImages(referenceImagesRef.current.filter((item) => item.id !== selectedReferenceImageId));
+      setSelectedReferenceImageId(null);
+      return;
+    }
     if (selectedTextId !== null) {
       commitTextItems(textItemsRef.current.filter((item) => item.id !== selectedTextId));
       setSelectedTextId(null);
@@ -694,33 +748,56 @@ export default function App() {
     commitElements(next);
     setSelectedIds([]);
     setSelectedPointIdx(null);
-  }, [commitElements, commitTextItems, elements, selectedIdSet, selectedIds.length, selectedTextId, showMsg]);
+  }, [commitElements, commitReferenceImages, commitTextItems, elements, selectedIdSet, selectedIds.length, selectedReferenceImageId, selectedTextId, showMsg]);
 
   const moveSelectedBackward = useCallback(() => {
-    if (!selectedIds.length && selectedTextId === null) return;
+    if (!selectedIds.length && selectedTextId === null && selectedReferenceImageId === null) return;
     const next = reorderSceneSelection({
       elements: elementsRef.current,
       textItems: textItemsRef.current,
+      referenceImages: referenceImagesRef.current,
       selectedIds,
       selectedTextId,
+      selectedReferenceImageId,
       direction: 'backward',
     });
-    commitScene(next.elements, next.textItems);
-    showMsg(selectedTextId !== null && !selectedIds.length ? '已将所选文字下移一层' : '已将所选对象下移一层');
-  }, [commitScene, selectedIds, selectedTextId, showMsg]);
+    commitScene(next.elements, next.textItems, next.referenceImages);
+    showMsg(selectedReferenceImageId !== null ? '已将参考图下移一层' : selectedTextId !== null && !selectedIds.length ? '已将所选文字下移一层' : '已将所选对象下移一层');
+  }, [commitScene, selectedIds, selectedReferenceImageId, selectedTextId, showMsg]);
 
   const moveSelectedForward = useCallback(() => {
-    if (!selectedIds.length && selectedTextId === null) return;
+    if (!selectedIds.length && selectedTextId === null && selectedReferenceImageId === null) return;
     const next = reorderSceneSelection({
       elements: elementsRef.current,
       textItems: textItemsRef.current,
+      referenceImages: referenceImagesRef.current,
       selectedIds,
       selectedTextId,
+      selectedReferenceImageId,
       direction: 'forward',
     });
-    commitScene(next.elements, next.textItems);
-    showMsg(selectedTextId !== null && !selectedIds.length ? '已将所选文字上移一层' : '已将所选对象上移一层');
-  }, [commitScene, selectedIds, selectedTextId, showMsg]);
+    commitScene(next.elements, next.textItems, next.referenceImages);
+    showMsg(selectedReferenceImageId !== null ? '已将参考图上移一层' : selectedTextId !== null && !selectedIds.length ? '已将所选文字上移一层' : '已将所选对象上移一层');
+  }, [commitScene, selectedIds, selectedReferenceImageId, selectedTextId, showMsg]);
+
+  const selectSceneItem = useCallback((item: { kind: 'element' | 'text' | 'referenceImage'; id: number }) => {
+    setSelectedPointIdx(null);
+    if (item.kind === 'element') {
+      setSelectedIds([item.id]);
+      setSelectedTextId(null);
+      setSelectedReferenceImageId(null);
+      return;
+    }
+    if (item.kind === 'text') {
+      setSelectedIds([]);
+      setSelectedTextId(item.id);
+      setSelectedReferenceImageId(null);
+      return;
+    }
+    setSelectedIds([]);
+    setSelectedTextId(null);
+    setSelectedReferenceImageId(item.id);
+  }, []);
 
   const deleteSelectedPoint = useCallback(() => {
     if (!isEditMode || selectedPointIdx === null || !selectedSingle) return;
@@ -827,15 +904,17 @@ export default function App() {
       setMarquee(null);
     }
     if (currentElements && hasPendingHistoryRef.current) {
-      saveToHistory({ elements: currentElements, textItems: textItemsRef.current });
+      saveToHistory({ elements: currentElements, textItems: textItemsRef.current, referenceImages: referenceImagesRef.current });
       hasPendingHistoryRef.current = false;
     }
     setDraggingId(null);
     setRotatingId(null);
     setScalingId(null);
     setDraggingTextId(null);
+    setDraggingReferenceImageId(null);
     setRotatingTextId(null);
     setScalingTextId(null);
+    setScalingReferenceImageId(null);
     setRotatingGroup(false);
     setScalingGroup(false);
     setIsPanning(false);
@@ -899,7 +978,7 @@ export default function App() {
           deleteSelectedPoint();
           return;
         }
-        if (selectedIds.length > 0 || selectedTextId !== null) {
+        if (selectedIds.length > 0 || selectedTextId !== null || selectedReferenceImageId !== null) {
           e.preventDefault();
           deleteSelectedElements();
         }
@@ -914,7 +993,7 @@ export default function App() {
       window.removeEventListener('pointerup', onWindowPointerUp);
       window.removeEventListener('pointercancel', onWindowPointerUp);
     };
-  }, [deleteSelectedElements, deleteSelectedPoint, handlePointerUp, isEditMode, selectedIds.length, selectedPointIdx, selectedSingle, selectedTextId, undo]);
+  }, [deleteSelectedElements, deleteSelectedPoint, handlePointerUp, isEditMode, selectedIds.length, selectedPointIdx, selectedReferenceImageId, selectedSingle, selectedTextId, undo]);
 
   const computeLiquidFiltersAtTime = useCallback((sampleTime: number) => {
     return computeLiquidFilterFrames(elements, liquidSettings, sampleTime);
@@ -963,7 +1042,11 @@ export default function App() {
   const downloadPNG = useCallback(async () => {
     try {
       await downloadPngFile({
-        renderCanvas: (options) => renderCurrentExportCanvas({ ...options, useStageSnapshot: true }),
+        renderCanvas: (options) => renderCurrentExportCanvas({
+          ...options,
+          transparent: artboard.backgroundColor === 'transparent',
+          useStageSnapshot: true,
+        }),
         scale: pngExportScale,
         width: pngOutputWidth,
         height: pngOutputHeight,
@@ -973,7 +1056,7 @@ export default function App() {
       const message = error instanceof Error ? error.message : '未知错误';
       showMsg(`PNG 导出失败：${message}`);
     }
-  }, [pngExportScale, pngOutputHeight, pngOutputWidth, renderCurrentExportCanvas, showMsg]);
+  }, [artboard.backgroundColor, pngExportScale, pngOutputHeight, pngOutputWidth, renderCurrentExportCanvas, showMsg]);
 
   const buildIllustratorExportSvg = useCallback(() => buildIllustratorSvgString({
     artboard,
@@ -1099,6 +1182,7 @@ export default function App() {
       if (!isPointInsideArtboard(point)) return;
       setSelectedIds([]);
       setSelectedTextId(null);
+      setSelectedReferenceImageId(null);
       setSelectedPointIdx(null);
       if (!isEditMode) setMarquee({ startX: point.x, startY: point.y, currentX: point.x, currentY: point.y });
       return;
@@ -1128,6 +1212,7 @@ export default function App() {
     if (!selectedIdSet.has(id)) {
       setSelectedIds([id]);
       setSelectedTextId(null);
+      setSelectedReferenceImageId(null);
       setActiveColor(el.color);
     }
 
@@ -1169,6 +1254,7 @@ export default function App() {
     if (!target) return;
     setSelectedTextId(id);
     setSelectedIds([]);
+    setSelectedReferenceImageId(null);
     setSelectedPointIdx(null);
     if (mode === 'drag') {
       setDraggingTextId(id);
@@ -1190,6 +1276,31 @@ export default function App() {
     setTextInitialScale(target.scale);
     setTextInitialDist(Math.max(0.0001, Math.hypot(point.x - target.x, point.y - target.y)));
   }, [textItems, viewOffset, zoom]);
+
+  const handleReferenceImagePointerDown = useCallback((e: React.PointerEvent, id: number, mode: 'drag' | 'scale' = 'drag') => {
+    if (!canvasRef.current) return;
+    if (e.button === 2) return;
+    e.stopPropagation();
+    (e.target as Element).setPointerCapture?.(e.pointerId);
+    const rect = canvasRef.current.getBoundingClientRect();
+    const point = getClientCanvasPoint(e, rect, viewOffset, zoom);
+    const target = referenceImages.find((item) => item.id === id);
+    if (!target) return;
+    setSelectedReferenceImageId(id);
+    setSelectedIds([]);
+    setSelectedTextId(null);
+    setSelectedPointIdx(null);
+    if (mode === 'drag') {
+      setDraggingReferenceImageId(id);
+      setScalingReferenceImageId(null);
+      referenceImageDragOffsetRef.current = { x: point.x - target.x, y: point.y - target.y };
+      return;
+    }
+    setDraggingReferenceImageId(null);
+    setScalingReferenceImageId(id);
+    setReferenceImageInitialScale(target.scale);
+    setReferenceImageInitialDist(Math.max(0.0001, Math.hypot(point.x - target.x, point.y - target.y)));
+  }, [referenceImages, viewOffset, zoom]);
 
   const handlePointerMove = useCallback((e: React.PointerEvent) => {
     if (!canvasRef.current) return;
@@ -1399,6 +1510,15 @@ export default function App() {
       return;
     }
 
+    if (draggingReferenceImageId !== null) {
+      applyInteractiveReferenceImages((prev) => prev.map((item) => (
+        item.id === draggingReferenceImageId
+          ? { ...item, x: point.x - referenceImageDragOffsetRef.current.x, y: point.y - referenceImageDragOffsetRef.current.y }
+          : item
+      )));
+      return;
+    }
+
     if (rotatingTextId !== null) {
       const target = textItemsRef.current.find((item) => item.id === rotatingTextId);
       if (!target) return;
@@ -1419,6 +1539,18 @@ export default function App() {
       applyInteractiveTextItems((prev) => prev.map((item) => (
         item.id === scalingTextId
           ? { ...item, scale: textInitialScale * ratio }
+          : item
+      )));
+      return;
+    }
+
+    if (scalingReferenceImageId !== null) {
+      const target = referenceImagesRef.current.find((item) => item.id === scalingReferenceImageId);
+      if (!target) return;
+      const ratio = Math.max(0.1, Math.hypot(point.x - target.x, point.y - target.y) / referenceImageInitialDist);
+      applyInteractiveReferenceImages((prev) => prev.map((item) => (
+        item.id === scalingReferenceImageId
+          ? { ...item, scale: referenceImageInitialScale * ratio }
           : item
       )));
       return;
@@ -1446,7 +1578,7 @@ export default function App() {
       }
       applyInteractiveElements((prev) => prev.map((item) => item.id === scalingId ? { ...item, scale: initialScale * ratio } : item));
     }
-  }, [activePoint, applyInteractiveElements, applyInteractiveTextItems, draggingId, draggingTextId, elementsById, groupCenter.x, groupCenter.y, initialDist, initialScale, initialStates, isBrushMode, isDrawingBrush, isPanning, isPointInsideArtboard, marquee, panStart.x, panStart.y, rotatingGroup, rotatingId, rotatingTextId, rotationSnap.initialRotation, rotationSnap.startAngle, scalingGroup, scalingId, scalingTextId, textInitialDist, textInitialScale, textRotationSnap.initialRotation, textRotationSnap.startAngle, viewOffset, zoom]);
+  }, [activePoint, applyInteractiveElements, applyInteractiveReferenceImages, applyInteractiveTextItems, draggingId, draggingReferenceImageId, draggingTextId, elementsById, groupCenter.x, groupCenter.y, initialDist, initialScale, initialStates, isBrushMode, isDrawingBrush, isPanning, isPointInsideArtboard, marquee, panStart.x, panStart.y, referenceImageInitialDist, referenceImageInitialScale, rotatingGroup, rotatingId, rotatingTextId, rotationSnap.initialRotation, rotationSnap.startAngle, scalingGroup, scalingId, scalingReferenceImageId, scalingTextId, textInitialDist, textInitialScale, textRotationSnap.initialRotation, textRotationSnap.startAngle, viewOffset, zoom]);
 
   const liquidFilters = useMemo(() => computeLiquidFiltersAtTime(time), [computeLiquidFiltersAtTime, time]);
 
@@ -1471,6 +1603,13 @@ export default function App() {
           drafts={drafts}
           openDraft={openDraft}
           deleteDraft={deleteDraft}
+          referenceImages={referenceImages}
+          selectedTextId={selectedTextId}
+          selectedReferenceImageId={selectedReferenceImageId}
+          orderedSceneItems={orderedSceneItems}
+          selectSceneItem={selectSceneItem}
+          referenceImageInputRef={referenceImageInputRef}
+          handleReferenceImageUpload={handleReferenceImageUpload}
           fileInputRef={fileInputRef}
           handleFileUpload={handleFileUpload}
           addTextElement={addTextElement}
@@ -1489,6 +1628,7 @@ export default function App() {
           setIsDrawingBrush={setIsDrawingBrush}
           selectedIds={selectedIds}
           hasTextSelection={selectedTextId !== null}
+          hasReferenceImageSelection={selectedReferenceImageId !== null}
           moveSelectedBackward={moveSelectedBackward}
           moveSelectedForward={moveSelectedForward}
           deleteSelectedElements={deleteSelectedElements}
@@ -1535,7 +1675,9 @@ export default function App() {
           artboardRect={artboardRect}
           elements={elements}
           textItems={textItems}
+          referenceImages={referenceImages}
           selectedTextId={selectedTextId}
+          selectedReferenceImageId={selectedReferenceImageId}
           selectedIdSet={selectedIdSet}
           liquidSettings={liquidSettings}
           brushPoints={brushPoints}
@@ -1548,6 +1690,7 @@ export default function App() {
           fitViewToArtboard={fitViewToArtboard}
           textLensRange={textLensRange}
           handleTextPointerDown={handleTextPointerDown}
+          handleReferenceImagePointerDown={handleReferenceImagePointerDown}
         />
         </main>
 

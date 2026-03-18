@@ -2,6 +2,7 @@ import React, { memo, useMemo } from 'react';
 import {
   ChevronRight,
   FileCode,
+  Image as ImageIcon,
   LayoutGrid,
   PanelLeftClose,
   PanelLeftOpen,
@@ -34,6 +35,13 @@ type SidebarPanelProps = Pick<
   | 'drafts'
   | 'openDraft'
   | 'deleteDraft'
+  | 'referenceImages'
+  | 'selectedTextId'
+  | 'selectedReferenceImageId'
+  | 'orderedSceneItems'
+  | 'selectSceneItem'
+  | 'referenceImageInputRef'
+  | 'handleReferenceImageUpload'
   | 'fileInputRef'
   | 'handleFileUpload'
   | 'addTextElement'
@@ -59,6 +67,13 @@ const Sidebar = memo(function Sidebar({
   drafts,
   openDraft,
   deleteDraft,
+  referenceImages,
+  selectedTextId,
+  selectedReferenceImageId,
+  orderedSceneItems,
+  selectSceneItem,
+  referenceImageInputRef,
+  handleReferenceImageUpload,
   fileInputRef,
   handleFileUpload,
   addTextElement,
@@ -113,6 +128,10 @@ const Sidebar = memo(function Sidebar({
               <button onClick={fitViewToArtboard} className="px-3 py-3 rounded-2xl bg-white/92 text-slate-700 text-[11px] font-semibold tracking-wide border border-slate-200/90 shadow-[0_10px_24px_rgba(15,23,42,0.04)]">适配画板</button>
               <button onClick={rerandomizeLiquidProfiles} className="px-3 py-3 rounded-2xl bg-white/92 text-slate-700 text-[11px] font-semibold tracking-wide border border-slate-200/90 shadow-[0_10px_24px_rgba(15,23,42,0.04)]">液体随机</button>
               <button onClick={() => fileInputRef.current?.click()} className="px-3 py-3 rounded-2xl bg-white/92 text-slate-700 text-[11px] font-semibold tracking-wide border border-slate-200/90 shadow-[0_10px_24px_rgba(15,23,42,0.04)]">导入 SVG</button>
+              <button onClick={() => referenceImageInputRef.current?.click()} className="col-span-2 px-3 py-3 rounded-2xl bg-white/92 text-slate-700 text-[11px] font-semibold tracking-wide border border-slate-200/90 shadow-[0_10px_24px_rgba(15,23,42,0.04)] flex items-center justify-center gap-2">
+                <ImageIcon className="w-4 h-4" />
+                导入参考图
+              </button>
               <button onClick={addTextElement} className="col-span-2 px-3 py-3 rounded-2xl bg-white/92 text-slate-700 text-[11px] font-semibold tracking-wide border border-slate-200/90 shadow-[0_10px_24px_rgba(15,23,42,0.04)] flex items-center justify-center gap-2">
                 <Type className="w-4 h-4" />
                 添加文字
@@ -142,7 +161,40 @@ const Sidebar = memo(function Sidebar({
                 </div>
               </div>
             )}
+            {(referenceImages.length > 0 || orderedSceneItems.length > 0) && (
+              <div className="space-y-2 pt-1">
+                <div className="text-[11px] font-semibold tracking-[0.12em] text-slate-400">图层</div>
+                <div className="space-y-2">
+                  {[...referenceImages].sort((a, b) => a.layerOrder - b.layerOrder || a.id - b.id).map((item) => (
+                    <button
+                      key={`ref-layer-${item.id}`}
+                      onClick={() => selectSceneItem({ kind: 'referenceImage', id: item.id, layerOrder: item.layerOrder })}
+                      className={`w-full flex items-center justify-between rounded-2xl border px-3 py-2 text-left shadow-[0_10px_24px_rgba(15,23,42,0.04)] ${selectedReferenceImageId === item.id ? 'border-slate-950 bg-slate-950 text-white' : 'border-slate-200/90 bg-white/92 text-slate-700'}`}
+                    >
+                      <span className="truncate text-[12px] font-semibold">参考图 · {item.name}</span>
+                      <span className="text-[10px] opacity-70">底层</span>
+                    </button>
+                  ))}
+                  {[...orderedSceneItems].sort((a, b) => b.layerOrder - a.layerOrder || b.id - a.id).map((item) => {
+                    const isText = item.kind === 'text';
+                    const isSelected = item.kind === 'element' ? selectedIds.includes(item.id) : selectedTextId === item.id;
+                    const label = isText ? `文字 · ${item.id}` : `气泡 · ${elements.find((element) => element.id === item.id)?.name || item.id}`;
+                    return (
+                      <button
+                        key={`${item.kind}-${item.id}`}
+                        onClick={() => selectSceneItem(item)}
+                        className={`w-full flex items-center justify-between rounded-2xl border px-3 py-2 text-left shadow-[0_10px_24px_rgba(15,23,42,0.04)] ${isSelected ? 'border-slate-950 bg-slate-950 text-white' : 'border-slate-200/90 bg-white/92 text-slate-700'}`}
+                      >
+                        <span className="truncate text-[12px] font-semibold">{label}</span>
+                        <span className="text-[10px] opacity-70">{isText ? '文字' : '气泡'}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
             <input type="file" ref={fileInputRef} onChange={handleFileUpload} accept=".svg" className="hidden" />
+            <input type="file" ref={referenceImageInputRef} onChange={handleReferenceImageUpload} accept=".png,.jpg,.jpeg,image/png,image/jpeg" className="hidden" />
           </div>
 
           <Section title="预设素材" icon={LayoutGrid} open={sectionOpen.library} onToggle={() => toggleSection('library')}>

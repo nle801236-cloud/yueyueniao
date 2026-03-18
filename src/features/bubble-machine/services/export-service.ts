@@ -49,12 +49,14 @@ const renderStageSnapshotCanvas = ({
   width,
   height,
   scale,
+  transparent,
 }: {
   stageSvg: SVGSVGElement;
   stageViewBox: { x: number; y: number; width: number; height: number };
   width: number;
   height: number;
   scale: number;
+  transparent: boolean;
 }) => new Promise<HTMLCanvasElement>((resolve, reject) => {
   const clone = stageSvg.cloneNode(true) as SVGSVGElement;
   clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
@@ -64,6 +66,12 @@ const renderStageSnapshotCanvas = ({
   clone.setAttribute('viewBox', `${stageViewBox.x} ${stageViewBox.y} ${stageViewBox.width} ${stageViewBox.height}`);
   clone.style.width = `${Math.max(1, Math.round(width * scale))}px`;
   clone.style.height = `${Math.max(1, Math.round(height * scale))}px`;
+
+  clone.querySelectorAll('[data-ui="true"]').forEach((node) => node.remove());
+  if (transparent) {
+    const rootBackground = clone.querySelector('rect[width="100%"][height="100%"]');
+    rootBackground?.setAttribute('fill', 'transparent');
+  }
 
   const serializer = new XMLSerializer();
   const svgData = serializer.serializeToString(clone);
@@ -357,6 +365,7 @@ export const renderExportCanvas = ({
       width,
       height,
       scale: exportScale,
+      transparent,
     }).then(resolve).catch(reject);
     return;
   }
